@@ -408,7 +408,7 @@ export function DailyDigestGrid({ digestDate, onDigestDateChange }: DailyDigestG
     <div className="flex flex-col gap-4">
       {/* Toolbar: date nav + search + layout toggle + actions */}
       <div className="flex flex-col md:flex-row md:flex-wrap md:items-center md:justify-between gap-3">
-        <div className="flex items-center justify-center md:justify-start gap-2 w-full md:w-auto">
+        <div className="hidden md:flex items-center justify-center md:justify-start gap-2 w-full md:w-auto">
           <button
             type="button"
             onClick={handlePrev}
@@ -431,6 +431,29 @@ export function DailyDigestGrid({ digestDate, onDigestDateChange }: DailyDigestG
         </div>
 
         <div className="flex items-center flex-wrap md:flex-nowrap gap-2 w-full md:w-auto pr-1">
+          {/* Mobile date picker/nav */}
+          <div className="flex md:hidden items-center gap-1.5 shrink-0">
+            <button
+              type="button"
+              onClick={handlePrev}
+              className="px-2 py-1 rounded-md border border-surface-600 text-surface-300 hover:bg-surface-800 text-sm"
+              aria-label="Previous day"
+            >
+              ←
+            </button>
+            <span className="text-surface-200 text-xs font-medium min-w-[6.5rem] text-center">
+              {formatDisplayDate(digestDate)}
+            </span>
+            <button
+              type="button"
+              onClick={handleNext}
+              className="px-2 py-1 rounded-md border border-surface-600 text-surface-300 hover:bg-surface-800 text-sm"
+              aria-label="Next day"
+            >
+              →
+            </button>
+          </div>
+
           {/* Search */}
           <div className="relative">
             <svg className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-surface-500 pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -441,7 +464,7 @@ export function DailyDigestGrid({ digestDate, onDigestDateChange }: DailyDigestG
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               placeholder="Search members…"
-              className="w-32 sm:w-40 pl-7 pr-2 py-1 rounded-md border border-surface-600 bg-surface-800 text-surface-200 text-xs placeholder:text-surface-500 focus:outline-none focus:border-primary-500"
+              className="w-28 sm:w-40 pl-7 pr-2 py-1 rounded-md border border-surface-600 bg-surface-800 text-surface-200 text-xs placeholder:text-surface-500 focus:outline-none focus:border-primary-500"
             />
           </div>
 
