@@ -442,20 +442,20 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
       ): Promise<void> => {
         const appMatchFail = subPath.match(/^apps\/([a-f0-9-]+)$/i);
         const artifactMatchFail = subPath.match(/^artifacts?\/([a-f0-9-]+)$/i);
-        if (appMatchFail?.[1] || artifactMatchFail?.[1]) {
-          const appIdFail: string | undefined = appMatchFail?.[1];
-          const artifactIdFail: string | undefined = artifactMatchFail?.[1];
-          const endpoint: string = appIdFail
-            ? `/public/apps/${appIdFail}`
-            : `/public/artifacts/${artifactIdFail!}`;
+        if (appMatchFail?.[1]) {
+          const appIdFail: string = appMatchFail[1];
+          window.location.replace(`/apps/${appIdFail}`);
+          return;
+        }
+
+        if (artifactMatchFail?.[1]) {
+          const artifactIdFail: string = artifactMatchFail[1];
+          const endpoint: string = `/public/artifacts/${artifactIdFail}`;
           const { data: publicData } = await apiRequest<Record<string, unknown>>(endpoint, {
             method: "GET",
           });
           if (publicData) {
-            const fePath: string = appIdFail
-              ? `/public/apps/${appIdFail}`
-              : `/public/artifacts/${artifactIdFail!}`;
-            window.location.replace(fePath);
+            window.location.replace(`/public/artifacts/${artifactIdFail}`);
             return;
           }
         }
