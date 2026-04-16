@@ -92,6 +92,25 @@ def test_public_preview_description_uses_first_80_chars_of_artifact_content() ->
     assert description == content[:80]
 
 
+def test_public_preview_description_strips_repeated_artifact_title_prefix() -> None:
+    content = "Weekly KPI Report — A concise summary of this week's performance and key changes."
+    description = _public_preview_description(
+        conversation=None,
+        artifact=SimpleNamespace(title="Weekly KPI Report", content=content),
+        owner=SimpleNamespace(name="Alex", email="alex@example.com"),
+    )
+    assert description == "A concise summary of this week's performance and key changes."
+
+
+def test_public_preview_description_does_not_fallback_to_artifact_title() -> None:
+    description = _public_preview_description(
+        conversation=None,
+        artifact=SimpleNamespace(title="Weekly KPI Report", content=None),
+        owner=SimpleNamespace(name="Alex", email="alex@example.com"),
+    )
+    assert description == "Document — Alex"
+
+
 def test_build_preview_html_uses_public_apps_redirect_url() -> None:
     html = build_preview_html(
         page_title="Example",

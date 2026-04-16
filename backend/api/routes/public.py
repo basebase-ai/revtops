@@ -238,6 +238,9 @@ def _public_preview_description(
     """Build a concise public description for social preview unfurls."""
     if artifact:
         artifact_document_text = " ".join((artifact.content or "").split())
+        artifact_title = (artifact.title or "").strip()
+        if artifact_title and artifact_document_text.startswith(artifact_title):
+            artifact_document_text = artifact_document_text[len(artifact_title):].lstrip(" \n\r\t-–—:|")
         if artifact_document_text:
             return artifact_document_text[:80]
 
@@ -249,8 +252,6 @@ def _public_preview_description(
         return f"{conversation.title} — {owner_label}"
     if app and app.title:
         return f"{app.title} — {owner_label}"
-    if artifact and artifact.title:
-        return f"{artifact.title} — {owner_label}"
     if artifact:
         return f"Document — {owner_label}"
     return f"Application — {owner_label}"
