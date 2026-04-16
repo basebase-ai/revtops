@@ -50,6 +50,16 @@ def test_find_safe_stream_break_skips_vs_abbreviation() -> None:
     assert find_safe_break(text, strategy="quickest_safe") == len("This is a Lakers vs. Celtics preview. ")
 
 
+def test_find_safe_stream_break_skips_period_inside_uri() -> None:
+    text = "Link https://example.com/path.to/file and then continue"
+    assert find_safe_break(text, strategy="quickest_safe") == 0
+
+
+def test_find_safe_stream_break_skips_question_mark_inside_uri() -> None:
+    text = "Use https://example.com/search?q=test? value now"
+    assert find_safe_break(text, strategy="quickest_safe") == 0
+
+
 def test_find_safe_stream_break_defers_inside_pipe_table_with_pipes() -> None:
     text = "Here is the data:\n\n| Name | Email |\n| Alice | alice@co.com |"
     assert find_safe_break(text, strategy="quickest_safe") == 0
