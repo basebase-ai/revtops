@@ -408,11 +408,24 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
     isSyncingFromUrlRef.current = true;
     try {
       useUIStore.setState({ orgAccessError: null });
-      const path = window.location.pathname;
+      const rawPath = window.location.pathname;
+      const basebasePrefix = "/basebase";
+      const path =
+        rawPath === basebasePrefix
+          ? "/"
+          : rawPath.startsWith(`${basebasePrefix}/`)
+            ? rawPath.slice(basebasePrefix.length)
+            : rawPath;
+      if (rawPath !== path) {
+        console.info("[routing] normalized legacy /basebase path", {
+          rawPath,
+          normalizedPath: path,
+        });
+      }
 
       const orgPrefixMatch = path.match(/^\/([a-z0-9-]+)(?:\/(.*))?$/);
     const orgHandleFromPath: string | null =
-      orgPrefixMatch && orgPrefixMatch[1] && !/^(auth|admin|embed|chat|apps|documents|artifact|artifacts|connectors|data|workflows|memory|changes)$/i.test(orgPrefixMatch[1])
+      orgPrefixMatch && orgPrefixMatch[1] && !/^(auth|admin|embed|chat|apps|documents|artifact|artifacts|connectors|data|workflows|memory|changes|basebase)$/i.test(orgPrefixMatch[1])
         ? orgPrefixMatch[1]
         : null;
 
