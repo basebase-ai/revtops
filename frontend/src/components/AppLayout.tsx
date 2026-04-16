@@ -444,8 +444,14 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
         const artifactMatchFail = subPath.match(/^artifacts?\/([a-f0-9-]+)$/i);
         if (appMatchFail?.[1]) {
           const appIdFail: string = appMatchFail[1];
-          window.location.replace(`/apps/${appIdFail}`);
-          return;
+          const endpoint: string = `/public/apps/${appIdFail}`;
+          const { data: publicData } = await apiRequest<Record<string, unknown>>(endpoint, {
+            method: "GET",
+          });
+          if (publicData) {
+            window.location.replace(`/public/apps/${appIdFail}`);
+            return;
+          }
         }
 
         if (artifactMatchFail?.[1]) {
