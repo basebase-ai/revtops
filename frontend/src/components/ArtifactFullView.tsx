@@ -31,6 +31,27 @@ interface ArtifactApiResponse {
   visibility?: string;
 }
 
+function isArtifactApiResponse(value: unknown): value is ArtifactApiResponse {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  const record = value as Record<string, unknown>;
+  return (
+    typeof record.id === "string" &&
+    ("type" in record) &&
+    ("title" in record) &&
+    ("description" in record) &&
+    ("content_type" in record) &&
+    ("mime_type" in record) &&
+    ("filename" in record) &&
+    ("content" in record) &&
+    ("conversation_id" in record) &&
+    ("message_id" in record) &&
+    ("created_at" in record) &&
+    ("user_id" in record)
+  );
+}
+
 // Map API snake_case to ArtifactViewer camelCase
 function toFileArtifact(api: ArtifactApiResponse): {
   id: string;
@@ -134,7 +155,10 @@ export function ArtifactFullView({
     setError(null);
     try {
       const parsed = await fetchArtifactByIdWithFallback(artifactId);
-      const artifactData = parsed as ArtifactApiResponse;
+      if (!isArtifactApiResponse(parsed)) {
+        throw new Error("Artifact response payload is missing expected fields");
+      }
+      const artifactData = parsed;
       setArtifact(toFileArtifact(artifactData));
       setVisibility((artifactData.visibility as VisibilityLevel) ?? "team");
       setOwnerUserId(artifactData.user_id);
