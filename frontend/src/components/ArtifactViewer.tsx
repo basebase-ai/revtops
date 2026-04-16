@@ -68,16 +68,6 @@ function attachmentDisplayType(mimeType: string): AttachmentDisplayType {
   return "text";
 }
 
-const BASEBASE_ARTIFACT_LINK_RE: RegExp =
-  /^(?:https?:\/\/[^/]+)?\/(?:basebase\/(?:documents|artifacts)|public\/artifacts)\/[a-f0-9-]+\/?$/i;
-
-function looksLikeBasebaseUnfurlUrl(content: string | undefined): boolean {
-  if (!content) return false;
-  const trimmed = content.trim();
-  if (!trimmed) return false;
-  return BASEBASE_ARTIFACT_LINK_RE.test(trimmed);
-}
-
 export function ArtifactViewer({
   artifact,
   attachmentId,
@@ -164,7 +154,7 @@ export function ArtifactViewer({
   useEffect(() => {
     if (isAttachmentMode || !artifact) return;
     if (!isFileArtifact(artifact)) return;
-    if (artifact.content && !looksLikeBasebaseUnfurlUrl(artifact.content)) {
+    if (artifact.content) {
       setContent(artifact.content);
       return;
     }
@@ -173,9 +163,6 @@ export function ArtifactViewer({
       setLoading(true);
       setError(null);
       try {
-        if (looksLikeBasebaseUnfurlUrl(artifact.content)) {
-          console.info("[ArtifactViewer] Artifact payload contained unfurl URL; refetching full artifact content by ID.");
-        }
         const authHeaders = await getAuthenticatedRequestHeaders();
         const response = await fetch(`${API_BASE}/artifacts/${artifact.id}`, {
           headers: authHeaders,
