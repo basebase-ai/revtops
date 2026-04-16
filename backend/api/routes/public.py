@@ -264,20 +264,6 @@ def _public_preview_title(*, app: App | None = None, artifact: Artifact | None =
     return "Basebase"
 
 
-def _app_share_redirect_url(*, app_id: str, visibility: str | None) -> str:
-    """
-    Resolve the browser redirect target for /basebase/apps/:id share previews.
-
-    Public apps should land on the unauthenticated public app page to avoid
-    redirect loops through the share endpoint. Non-public apps should stay on
-    the canonical in-app route, where auth/access handling is enforced.
-    """
-    frontend_origin = _frontend_origin()
-    if visibility == "public":
-        return f"{frontend_origin}/public/apps/{app_id}"
-    return f"{frontend_origin}/basebase/apps/{app_id}"
-
-
 @router.get("/share/apps/{app_id}", response_class=HTMLResponse)
 @share_router.get("/basebase/apps/{app_id}", response_class=HTMLResponse)
 async def get_public_app_share_preview(app_id: str, request: Request) -> HTMLResponse:
@@ -321,7 +307,7 @@ async def get_public_app_share_preview(app_id: str, request: Request) -> HTMLRes
         owner = await session.scalar(select(User).where(User.id == app.user_id))
 
     canonical_url = f"{_frontend_origin()}/basebase/apps/{app_id}"
-    redirect_url = _app_share_redirect_url(app_id=app_id, visibility=app.visibility)
+    redirect_url = canonical_url
     image_url = f"{_public_origin(request)}/api/public/share/apps/{app_id}/snapshot.png"
     title = _public_preview_title(app=app)
     description = _public_preview_description(conversation=conversation, app=app, owner=owner)

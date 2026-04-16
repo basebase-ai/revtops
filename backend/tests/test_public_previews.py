@@ -4,7 +4,6 @@ import base64
 from types import SimpleNamespace
 
 from api.routes.public import (
-    _app_share_redirect_url,
     _cache_get_html,
     _cache_set_html,
     _is_unfurlable_visibility,
@@ -12,7 +11,6 @@ from api.routes.public import (
     _public_preview_description,
     _public_preview_title,
 )
-from config import settings
 from services.public_previews import build_preview_html, decode_data_url_image, render_card_png
 
 
@@ -80,31 +78,15 @@ def test_public_preview_description_falls_back_to_document_and_owner_email() -> 
     assert description == "Document — owner@example.com"
 
 
-def test_build_preview_html_uses_configured_redirect_url() -> None:
+def test_build_preview_html_uses_basebase_apps_redirect_url() -> None:
     html = build_preview_html(
         page_title="Example",
         description="Description",
         canonical_url="https://app.basebase.com/basebase/apps/abc",
         image_url="https://app.basebase.com/api/public/share/apps/abc/snapshot.png",
-        redirect_url="https://app.basebase.com/public/apps/abc",
+        redirect_url="https://app.basebase.com/basebase/apps/abc",
     )
-    assert 'window.location.replace("https://app.basebase.com/public/apps/abc")' in html
-
-
-def test_app_share_redirect_url_uses_public_path_for_public_apps() -> None:
-    frontend_origin = settings.FRONTEND_URL.rstrip("/")
-    assert (
-        _app_share_redirect_url(app_id="abc", visibility="public")
-        == f"{frontend_origin}/public/apps/abc"
-    )
-
-
-def test_app_share_redirect_url_keeps_basebase_path_for_non_public_apps() -> None:
-    frontend_origin = settings.FRONTEND_URL.rstrip("/")
-    assert (
-        _app_share_redirect_url(app_id="abc", visibility="private")
-        == f"{frontend_origin}/basebase/apps/abc"
-    )
+    assert 'window.location.replace("https://app.basebase.com/basebase/apps/abc")' in html
 
 
 def test_public_preview_title_uses_app_title_when_present() -> None:
