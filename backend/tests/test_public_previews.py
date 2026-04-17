@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import base64
 from types import SimpleNamespace
+from uuid import uuid4
 
+from api.main import app
 from api.routes.public import (
     _cache_get_html,
     _cache_set_html,
@@ -12,6 +14,8 @@ from api.routes.public import (
     _public_preview_title,
     share_router,
 )
+from api.routes.artifacts import get_artifact
+from starlette.routing import Match
 from services.public_previews import build_preview_html, decode_data_url_image, render_card_png
 
 
@@ -169,3 +173,21 @@ def test_share_router_supports_artifact_uuid_paths_for_unfurl_links() -> None:
     assert "/artifacts/{artifact_id}" in route_paths
     assert "/basebase/artifacts/{artifact_id}" in route_paths
     assert "/{org_slug}/artifacts/{artifact_id}" in route_paths
+
+
+def test_api_artifact_route_is_resolved_before_slug_unfurl_route() -> None:
+    artifact_id = uuid4()
+    scope = {
+        "type": "http",
+        "path": f"/api/artifacts/{artifact_id}",
+        "method": "GET",
+    }
+
+    matched_endpoint = None
+    for route in app.router.routes:
+        match, child_scope = route.matches(scope)
+        if match == Match.FULL:
+            matched_endpoint = child_scope.get("endpoint")
+            break
+
+    assert matched_endpoint is get_artifact
