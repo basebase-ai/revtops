@@ -100,12 +100,25 @@ def _resolve_conversation_scope(
     revtops_user_id: str | None,
 ) -> str:
     """Resolve conversation scope for newly created or updated conversations."""
+    channel_type: str = (message.messenger_context.get("channel_type") or "").strip().lower()
+    channel_id: str = (message.messenger_context.get("channel_id") or "").strip().upper()
+
+    # Slack private channels use channel_type="group" and channel IDs that start
+    # with "G". These should remain private in our chat UI.
+    is_private_slack_channel: bool = (
+        channel_type in {"group", "private_channel"}
+        or (
+            message.message_type != MessageType.DIRECT
+            and channel_id.startswith("G")
+        )
+    )
+    if is_private_slack_channel:
+        return "private"
+
     if message.message_type != MessageType.DIRECT:
         return "shared"
 
-    channel_type: str | None = message.messenger_context.get("channel_type")
-    normalized_channel_type: str = (channel_type or "").strip().lower()
-    if normalized_channel_type in {"mpim", "groupchat"}:
+    if channel_type in {"mpim", "groupchat"}:
         return "shared"
 
     identity_known: bool = bool(revtops_user_id or message.external_user_id)
