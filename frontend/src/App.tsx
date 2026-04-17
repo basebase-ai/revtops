@@ -31,6 +31,10 @@ type Screen = 'auth' | 'blocked-email' | 'not-registered' | 'waitlist' | 'onboar
 // URL for public website (landing, blog, waitlist form)
 const WWW_URL = import.meta.env.VITE_WWW_URL ?? 'https://www.basebase.com';
 
+const UUID_PATH_SEGMENT = '([a-f0-9-]{36})';
+const APP_DEEP_LINK_REGEX = new RegExp(`^\\/(?:[a-z0-9-]+\\/)?apps\\/${UUID_PATH_SEGMENT}$`, 'i');
+const ARTIFACT_DEEP_LINK_REGEX = new RegExp(`^\\/(?:[a-z0-9-]+\\/)?(?:artifacts?|documents?)\\/${UUID_PATH_SEGMENT}$`, 'i');
+
 function App(): JSX.Element {
   const [screen, setScreen] = useState<Screen>('auth');
   const [isLoading, setIsLoading] = useState<boolean>(true);
@@ -69,6 +73,39 @@ function App(): JSX.Element {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [screen, handleCreateNewOrg]);
 
+  const maybeRedirectToPublicDeepLink = useCallback(async (path: string): Promise<boolean> => {
+    const appMatch = path.match(APP_DEEP_LINK_REGEX);
+    if (appMatch?.[1]) {
+      const appId = appMatch[1];
+      try {
+        const response = await fetch(`${API_BASE}/public/apps/${appId}`);
+        if (response.ok) {
+          window.location.replace(`/public/apps/${appId}`);
+          return true;
+        }
+      } catch (error) {
+        console.warn('Public app fallback check failed:', { appId, error });
+      }
+      return false;
+    }
+
+    const artifactMatch = path.match(ARTIFACT_DEEP_LINK_REGEX);
+    if (artifactMatch?.[1]) {
+      const artifactId = artifactMatch[1];
+      try {
+        const response = await fetch(`${API_BASE}/public/artifacts/${artifactId}`);
+        if (response.ok) {
+          window.location.replace(`/public/artifacts/${artifactId}`);
+          return true;
+        }
+      } catch (error) {
+        console.warn('Public artifact fallback check failed:', { artifactId, error });
+      }
+    }
+
+    return false;
+  }, []);
+
   // Check auth status on mount
   useEffect(() => {
     const checkAuth = async (): Promise<void> => {
@@ -100,6 +137,11 @@ function App(): JSX.Element {
             void useAppStore.getState().fetchUserOrganizations();
           }
         } else if (!hasPersistedUser) {
+          const redirectedToPublic = await maybeRedirectToPublicDeepLink(window.location.pathname);
+          if (redirectedToPublic) {
+            return;
+          }
+
           // No session and no persisted user - check legacy localStorage auth
           const storedUserId = localStorage.getItem('user_id');
           if (storedUserId) {
@@ -169,7 +211,7 @@ function App(): JSX.Element {
       subscription.unsubscribe();
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [maybeRedirectToPublicDeepLink]);
 
   const handleAuthenticatedUser = async (supabaseUser: User, skipOrgUpdate = false): Promise<void> => {
     const email = supabaseUser.email ?? '';
