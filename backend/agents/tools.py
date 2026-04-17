@@ -2330,6 +2330,20 @@ async def _fetch_url(params: dict[str, Any]) -> dict[str, Any]:
     render_js: bool = params.get("render_js", False)
     premium_proxy: bool = params.get("premium_proxy", False)
     wait_ms: int | None = params.get("wait_ms")
+    raw_headers: Any = params.get("headers")
+    header_map: dict[str, Any] = raw_headers if isinstance(raw_headers, dict) else {}
+    authorization: str | None = (
+        params.get("authorization")
+        or params.get("auth_header")
+        or header_map.get("authorization")
+        or header_map.get("Authorization")
+    )
+    x_organization_id: str | None = (
+        params.get("x_organization_id")
+        or params.get("x-organization-id")
+        or header_map.get("x-organization-id")
+        or header_map.get("X-Organization-Id")
+    )
 
     if not url:
         return {"error": "No URL provided"}
@@ -2349,7 +2363,11 @@ async def _fetch_url(params: dict[str, Any]) -> dict[str, Any]:
         if use_scrapingbee:
             body = await _fetch_url_via_scrapingbee(url, extract_text, render_js, premium_proxy, wait_ms)
         else:
-            body = await _fetch_url_direct(url)
+            body = await _fetch_url_direct(
+                url,
+                authorization=authorization,
+                x_organization_id=x_organization_id,
+            )
     except httpx.TimeoutException:
         logger.error("[Tools._fetch_url] Request timed out for %s", url)
         return {"error": "Request timed out. The page may be slow to respond.", "url": url}
@@ -2374,15 +2392,34 @@ async def _fetch_url(params: dict[str, Any]) -> dict[str, Any]:
     return _truncate_result(url, body, mode="html", max_chars=100_000)
 
 
-async def _fetch_url_direct(url: str) -> str:
+def _build_direct_fetch_headers(
+    authorization: str | None = None,
+    x_organization_id: str | None = None,
+) -> dict[str, str]:
+    headers: dict[str, str] = {
+        "User-Agent": "Mozilla/5.0 (compatible; Revtops/1.0)",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    }
+    if authorization and authorization.strip():
+        headers["Authorization"] = authorization.strip()
+    if x_organization_id and x_organization_id.strip():
+        headers["X-Organization-Id"] = x_organization_id.strip()
+    return headers
+
+
+async def _fetch_url_direct(
+    url: str,
+    authorization: str | None = None,
+    x_organization_id: str | None = None,
+) -> str:
     """Fetch a URL directly with httpx (no proxy, no cost)."""
     async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
         response = await client.get(
             url,
-            headers={
-                "User-Agent": "Mozilla/5.0 (compatible; Revtops/1.0)",
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            },
+            headers=_build_direct_fetch_headers(
+                authorization=authorization,
+                x_organization_id=x_organization_id,
+            ),
         )
         if response.status_code >= 400:
             raise Exception(f"HTTP {response.status_code} from {url}")
