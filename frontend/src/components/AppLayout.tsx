@@ -435,29 +435,60 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
       }
       const subPath: string = orgPrefixMatch?.[2] ?? "";
 
+      const tryRedirectToPublicResource = async (
+        resourceType: "apps" | "artifacts",
+        resourceId: string,
+      ): Promise<boolean> => {
+        const endpoint = `/public/${resourceType}/${resourceId}`;
+        console.info(
+          "[AppLayout] Checking public fallback for %s/%s via %s",
+          resourceType,
+          resourceId,
+          endpoint,
+        );
+        const { data: publicData } = await apiRequest<Record<string, unknown>>(endpoint, {
+          method: "GET",
+        });
+        if (!publicData) {
+          console.info(
+            "[AppLayout] Public fallback unavailable for %s/%s",
+            resourceType,
+            resourceId,
+          );
+          return false;
+        }
+        const publicUri = `/public/${resourceType}/${resourceId}`;
+        console.info(
+          "[AppLayout] Redirecting to public URI after auth/org access failure: %s",
+          publicUri,
+        );
+        window.location.replace(publicUri);
+        return true;
+      };
+
       // Helper: try public fallback then show org-access error.
       const handleOrgAccessDenied = async (
         handle: string,
         orgName: string,
       ): Promise<void> => {
         const appMatchFail = subPath.match(/^apps\/([a-f0-9-]+)$/i);
-        const artifactMatchFail = subPath.match(/^artifacts?\/([a-f0-9-]+)$/i);
+        const artifactMatchFail = subPath.match(/^(?:artifacts?|documents)\/([a-f0-9-]+)$/i);
         if (appMatchFail?.[1]) {
           const appIdFail: string = appMatchFail[1];
+          const redirected = await tryRedirectToPublicResource("apps", appIdFail);
+          if (redirected) return;
+          console.warn(
+            "[AppLayout] Auth/org access failed for app %s and public fallback was unavailable. Falling back to in-app route.",
+            appIdFail,
+          );
           window.location.replace(`/apps/${appIdFail}`);
           return;
         }
 
         if (artifactMatchFail?.[1]) {
           const artifactIdFail: string = artifactMatchFail[1];
-          const endpoint: string = `/public/artifacts/${artifactIdFail}`;
-          const { data: publicData } = await apiRequest<Record<string, unknown>>(endpoint, {
-            method: "GET",
-          });
-          if (publicData) {
-            window.location.replace(`/public/artifacts/${artifactIdFail}`);
-            return;
-          }
+          const redirected = await tryRedirectToPublicResource("artifacts", artifactIdFail);
+          if (redirected) return;
         }
         useUIStore.setState({
           orgAccessError: { handle, orgName },
@@ -495,7 +526,7 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
         setCurrentView("chat");
         return;
       }
-      const artifactMatch = subPath.match(/^artifacts?\/([a-f0-9-]+)$/i);
+      const artifactMatch = subPath.match(/^(?:artifacts?|documents)\/([a-f0-9-]+)$/i);
       if (artifactMatch && artifactMatch[1]) {
         openArtifact(artifactMatch[1]);
         return;
@@ -547,7 +578,7 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
       setCurrentView("app-view");
       return;
     }
-    const artifactMatch = path.match(/^\/artifacts?\/([a-f0-9-]+)$/i);
+    const artifactMatch = path.match(/^\/(?:artifacts?|documents)\/([a-f0-9-]+)$/i);
     if (artifactMatch && artifactMatch[1]) {
       openArtifact(artifactMatch[1]);
       return;
