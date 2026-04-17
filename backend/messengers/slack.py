@@ -32,6 +32,7 @@ _SLACK_CONTEXT_SUMMARY_MAX_CHARS: int = 12000
 _SLACK_CONTEXT_SUMMARY_MESSAGE_CHAR_LIMIT: int = 220
 _SLACK_CONTEXT_SUMMARY_RECENT_ITEMS: int = 80
 _SLACK_CONTEXT_SUMMARY_TOP_THREADS: int = 10
+_SLACK_CONTEXT_SNAPSHOT_SEPARATOR: str = "\n\n---\n\n"
 
 
 def _normalize_slack_dedupe_text(text: str) -> str:
@@ -159,8 +160,13 @@ class SlackMessenger(WorkspaceMessenger):
                 thread_expansions=thread_expansions,
             )
 
+            snapshot_context: str = self._build_channel_snapshot_context(history_context=history_context)
             workflow_context: dict[str, Any] = dict(ctx.get("workflow_context") or {})
-            workflow_context["slack_recent_channel_context"] = history_context
+            prior_snapshot_context: str = str(workflow_context.get("slack_recent_channel_context") or "").strip()
+            workflow_context["slack_recent_channel_context"] = self._append_channel_snapshot_context(
+                prior_snapshot_context=prior_snapshot_context,
+                latest_snapshot_context=snapshot_context,
+            )
             ctx["workflow_context"] = workflow_context
             logger.info(
                 "[slack] Attached recent channel context for channel=%s workspace=%s channel_messages=%d expanded_threads=%d",
@@ -364,6 +370,43 @@ class SlackMessenger(WorkspaceMessenger):
         if len(compact_line) <= max_chars:
             return compact_line
         return f"{compact_line[:max_chars]}…"
+
+    def _build_channel_snapshot_context(self, *, history_context: str) -> str:
+        """Wrap channel history with snapshot metadata for per-message refresh visibility."""
+        fetched_at_iso: str = datetime.now(tz=UTC).isoformat()
+        return f"Slack snapshot fetched_at={fetched_at_iso}\n{history_context}"
+
+    def _append_channel_snapshot_context(
+        self,
+        *,
+        prior_snapshot_context: str,
+        latest_snapshot_context: str,
+    ) -> str:
+        """Append latest snapshot to prior context and enforce a total payload cap."""
+        if not prior_snapshot_context:
+            return latest_snapshot_context
+
+        if prior_snapshot_context == latest_snapshot_context:
+            logger.info("[slack] Snapshot context unchanged; reusing prior snapshot payload")
+            return latest_snapshot_context
+
+        combined_context: str = (
+            f"{prior_snapshot_context}{_SLACK_CONTEXT_SNAPSHOT_SEPARATOR}{latest_snapshot_context}"
+        )
+        if len(combined_context) <= _SLACK_CONTEXT_MAX_CHARS:
+            logger.info(
+                "[slack] Appended refreshed snapshot to prior Slack context combined_chars=%d",
+                len(combined_context),
+            )
+            return combined_context
+
+        trimmed_context: str = combined_context[-_SLACK_CONTEXT_MAX_CHARS:]
+        logger.info(
+            "[slack] Appended snapshot exceeded max chars; keeping most recent tail kept_chars=%d original_chars=%d",
+            len(trimmed_context),
+            len(combined_context),
+        )
+        return trimmed_context
 
     async def _resolve_user_mentions_in_text(
         self,

@@ -251,6 +251,43 @@ async def test_enrich_message_context_keeps_unresolved_mentions_unchanged():
     assert message.text == original
 
 
+@pytest.mark.asyncio
+async def test_inject_recent_channel_context_appends_refreshed_snapshot():
+    messenger = SlackMessenger()
+    message = InboundMessage(
+        text="hello",
+        message_type=MessageType.DIRECT,
+        external_user_id="U123",
+        message_id="123.456",
+        messenger_context={
+            "workspace_id": "T123",
+            "channel_id": "C456",
+            "channel_type": "channel",
+            "workflow_context": {
+                "slack_recent_channel_context": "Slack snapshot fetched_at=2026-04-17T00:00:00+00:00\nprior snapshot",
+            },
+        },
+    )
+
+    mock_connector = AsyncMock()
+    mock_connector.get_channel_messages.return_value = [
+        {"ts": "1710711600.000", "user": "U_A", "text": "fresh message", "reply_count": 0}
+    ]
+
+    with patch.object(messenger, "_get_connector", return_value=mock_connector):
+        await messenger._inject_recent_channel_context(
+            message=message,
+            workspace_id="T123",
+            channel_id="C456",
+        )
+
+    updated = message.messenger_context["workflow_context"]["slack_recent_channel_context"]
+    assert "prior snapshot" in updated
+    assert "fresh message" in updated
+    assert "\n\n---\n\n" in updated
+    assert updated.count("Slack snapshot fetched_at=") == 2
+
+
 def test_summarize_channel_history_if_needed_returns_original_when_within_limit():
     messenger = SlackMessenger()
     history = "short history"
@@ -322,3 +359,17 @@ def test_summarize_channel_history_if_needed_compresses_oversized_payload():
     assert "quick summary of newest 300 channel messages" in result
     assert "Most active threads by reply count" in result
     assert len(result) <= 12000
+
+
+def test_append_channel_snapshot_context_trims_to_max_chars():
+    messenger = SlackMessenger()
+    prior = "A" * 20000
+    latest = "B" * 10000
+
+    result = messenger._append_channel_snapshot_context(
+        prior_snapshot_context=prior,
+        latest_snapshot_context=latest,
+    )
+
+    assert len(result) == 24000
+    assert result.endswith("B" * 10000)
