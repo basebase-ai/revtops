@@ -74,6 +74,11 @@ function App(): JSX.Element {
   }, [screen, handleCreateNewOrg]);
 
   const maybeRedirectToPublicDeepLink = useCallback(async (path: string): Promise<boolean> => {
+    if (path.startsWith('/public/')) {
+      console.debug('Skipping deep-link public redirect check for already-public path.', { path });
+      return false;
+    }
+
     const appMatch = path.match(APP_DEEP_LINK_REGEX);
     if (appMatch?.[1]) {
       const appId = appMatch[1];
