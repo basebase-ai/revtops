@@ -10,7 +10,7 @@ interface PublicAppViewProps {
 
 export function PublicAppView({ appId }: PublicAppViewProps): JSX.Element {
   return (
-    <div className="min-h-screen bg-surface-950">
+    <div className="h-screen bg-surface-950">
       <SandpackAppRenderer appId={appId} publicMode />
     </div>
   );
