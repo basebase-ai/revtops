@@ -7,7 +7,7 @@
  */
 
 import { useState, useEffect, useCallback } from "react";
-import { API_BASE, getAuthenticatedRequestHeaders } from "../../lib/api";
+import { API_BASE } from "../../lib/api";
 import { ArtifactViewer } from "../ArtifactViewer";
 import { parsePossiblySpaWrappedJson } from "../../lib/documentPayload";
 
@@ -33,10 +33,7 @@ export function PublicArtifactView({ artifactId }: PublicArtifactViewProps): JSX
   const fetchArtifact = useCallback(async (): Promise<void> => {
     setLoading(true);
     try {
-      const authHeaders = await getAuthenticatedRequestHeaders();
-      const res = await fetch(`${API_BASE}/public/artifacts/${artifactId}`, {
-        headers: authHeaders,
-      });
+      const res = await fetch(`${API_BASE}/public/artifacts/${artifactId}`);
       if (!res.ok) {
         setError("Artifact not found or not public.");
         setData(null);

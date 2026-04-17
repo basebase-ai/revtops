@@ -4,14 +4,12 @@ import base64
 from types import SimpleNamespace
 
 from api.routes.public import (
-    _is_auth_header_present,
     _cache_get_html,
     _cache_set_html,
     _is_unfurlable_visibility,
     _public_origin,
     _public_preview_description,
     _public_preview_title,
-    _should_return_raw_artifact_json,
     share_router,
 )
 from services.public_previews import build_preview_html, decode_data_url_image, render_card_png
@@ -171,23 +169,3 @@ def test_share_router_supports_artifact_uuid_paths_for_unfurl_links() -> None:
     assert "/artifacts/{artifact_id}" in route_paths
     assert "/basebase/artifacts/{artifact_id}" in route_paths
     assert "/{org_slug}/artifacts/{artifact_id}" in route_paths
-
-
-def test_should_return_raw_artifact_json_for_direct_fetch_user_agent() -> None:
-    request = SimpleNamespace(headers={"user-agent": "Mozilla/5.0 (compatible; Revtops/1.0)"})
-    assert _should_return_raw_artifact_json(request) is True
-
-
-def test_should_not_return_raw_artifact_json_for_browser_user_agent() -> None:
-    request = SimpleNamespace(headers={"user-agent": "Mozilla/5.0 AppleWebKit/537.36 Safari/537.36"})
-    assert _should_return_raw_artifact_json(request) is False
-
-
-def test_is_auth_header_present_detects_bearer_token() -> None:
-    request = SimpleNamespace(headers={"authorization": "Bearer token-value"})
-    assert _is_auth_header_present(request) is True
-
-
-def test_is_auth_header_present_rejects_missing_or_blank() -> None:
-    assert _is_auth_header_present(SimpleNamespace(headers={})) is False
-    assert _is_auth_header_present(SimpleNamespace(headers={"authorization": "   "})) is False

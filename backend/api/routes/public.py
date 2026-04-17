@@ -12,11 +12,10 @@ from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, Response
+from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel
 from sqlalchemy import select
 
-from api.auth_middleware import get_optional_auth
 from config import settings
 from models.app import App
 from models.artifact import Artifact
@@ -35,7 +34,6 @@ _PREVIEW_CACHE_MAX_ITEMS = 512
 _preview_html_cache: dict[str, tuple[float, str]] = {}
 _preview_image_cache: dict[str, tuple[float, bytes, str]] = {}
 _UNFURLABLE_VISIBILITIES: frozenset[str] = frozenset({"private", "team", "public"})
-_RAW_FETCH_USER_AGENT_MARKERS: tuple[str, ...] = ("revtops/", "basebase-fetch/")
 
 
 def _cache_get_html(key: str) -> str | None:
@@ -80,16 +78,6 @@ def _cache_set_image(key: str, image_bytes: bytes, mime_type: str) -> None:
 
 def _is_unfurlable_visibility(visibility: str | None) -> bool:
     return visibility in _UNFURLABLE_VISIBILITIES
-
-
-def _should_return_raw_artifact_json(request: Request) -> bool:
-    """Detect non-browser direct fetch clients that want raw document JSON."""
-    user_agent = (request.headers.get("user-agent") or "").lower()
-    return any(marker in user_agent for marker in _RAW_FETCH_USER_AGENT_MARKERS)
-
-
-def _is_auth_header_present(request: Request) -> bool:
-    return bool((request.headers.get("authorization") or "").strip())
 
 
 @router.get("/apps/{app_id}")
@@ -425,7 +413,7 @@ async def get_public_artifact_share_preview(
     artifact_id: str,
     request: Request,
     org_slug: str | None = None,
-) -> Response:
+) -> HTMLResponse:
     """HTML metadata endpoint used by Slack + external scrapers for public artifact links."""
     try:
         artifact_uuid = UUID(artifact_id)
@@ -442,48 +430,6 @@ async def get_public_artifact_share_preview(
             "[public_preview] rendering non-public artifact unfurl artifact_id=%s visibility=%s",
             artifact_id,
             artifact.visibility,
-        )
-    if _should_return_raw_artifact_json(request):
-        if not _is_auth_header_present(request):
-            raise HTTPException(status_code=401, detail="Authentication required for direct fetch")
-        auth = await get_optional_auth(
-            authorization=request.headers.get("authorization"),
-            x_organization_id=request.headers.get("x-organization-id"),
-        )
-        if auth is None:
-            raise HTTPException(status_code=401, detail="Authentication required for direct fetch")
-        if auth.organization_id is None:
-            raise HTTPException(status_code=403, detail="Organization context required for direct fetch")
-        async with get_session(
-            organization_id=auth.organization_id_str,
-            user_id=auth.user_id_str,
-        ) as session:
-            scoped_result = await session.execute(select(Artifact).where(Artifact.id == artifact_uuid))
-            scoped_artifact: Artifact | None = scoped_result.scalar_one_or_none()
-        if scoped_artifact is None:
-            raise HTTPException(status_code=404, detail="Artifact not found")
-        logger.info(
-            "[public_preview] returning authenticated raw artifact JSON artifact_id=%s user_id=%s user_agent=%s",
-            artifact_id,
-            auth.user_id,
-            request.headers.get("user-agent"),
-        )
-        return JSONResponse(
-            content=PublicArtifactResponse(
-                id=str(scoped_artifact.id),
-                type=scoped_artifact.type,
-                title=scoped_artifact.title,
-                description=scoped_artifact.description,
-                content_type=scoped_artifact.content_type,
-                mime_type=scoped_artifact.mime_type,
-                filename=scoped_artifact.filename,
-                content=scoped_artifact.content,
-                conversation_id=str(scoped_artifact.conversation_id) if scoped_artifact.conversation_id else None,
-                message_id=str(scoped_artifact.message_id) if scoped_artifact.message_id else None,
-                created_at=f"{scoped_artifact.created_at.isoformat()}Z" if scoped_artifact.created_at else None,
-                user_id=str(scoped_artifact.user_id) if scoped_artifact.user_id else None,
-                visibility=scoped_artifact.visibility or "public",
-            ).model_dump(mode="json")
         )
 
     logger.info(
