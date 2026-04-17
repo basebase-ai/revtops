@@ -51,26 +51,46 @@ async def resolve_content_group_from_message(
 
     org_uuid = UUID(organization_id)
     async with get_session(organization_id=organization_id) as session:
-        insert_stmt = pg_insert(ContentGroup).values(
-            organization_id=org_uuid,
-            platform=key["platform"],
-            workspace_id=key["workspace_id"],
-            external_group_id=key["external_group_id"],
-            external_thread_id=key["external_thread_id"],
-            name=key["name"],
-            is_active=True,
-        )
-        upsert_stmt = insert_stmt.on_conflict_do_update(
-            constraint="uq_content_groups_key",
-            set_={
-                "name": key["name"],
-                "updated_at": datetime.now(UTC),
-                "is_active": True,
-            },
-        ).returning(ContentGroup.id)
+        group = None
+        # Nullable external_thread_id means UNIQUE doesn't prevent duplicates for NULL.
+        # Resolve the non-threaded row first to keep channel-level groups stable.
+        if key["external_thread_id"] is None:
+            existing_stmt = (
+                select(ContentGroup)
+                .where(ContentGroup.organization_id == org_uuid)
+                .where(ContentGroup.platform == key["platform"])
+                .where(ContentGroup.workspace_id == key["workspace_id"])
+                .where(ContentGroup.external_group_id == key["external_group_id"])
+                .where(ContentGroup.external_thread_id.is_(None))
+                .limit(1)
+            )
+            group = (await session.execute(existing_stmt)).scalar_one_or_none()
+            if group is not None:
+                group.name = key["name"]
+                group.is_active = True
+                group.updated_at = datetime.now(UTC)
 
-        group_id = (await session.execute(upsert_stmt)).scalar_one()
-        group = await session.get(ContentGroup, group_id)
+        if group is None:
+            insert_stmt = pg_insert(ContentGroup).values(
+                organization_id=org_uuid,
+                platform=key["platform"],
+                workspace_id=key["workspace_id"],
+                external_group_id=key["external_group_id"],
+                external_thread_id=key["external_thread_id"],
+                name=key["name"],
+                is_active=True,
+            )
+            upsert_stmt = insert_stmt.on_conflict_do_update(
+                constraint="uq_content_groups_key",
+                set_={
+                    "name": key["name"],
+                    "updated_at": datetime.now(UTC),
+                    "is_active": True,
+                },
+            ).returning(ContentGroup.id)
+
+            group_id = (await session.execute(upsert_stmt)).scalar_one()
+            group = await session.get(ContentGroup, group_id)
         await session.commit()
 
     logger.info(

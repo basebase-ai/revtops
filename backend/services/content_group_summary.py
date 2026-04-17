@@ -47,7 +47,6 @@ def _select_messages_stmt(
         select(Activity)
         .where(Activity.organization_id == UUID(organization_id))
         .where(Activity.source_system == content_group.platform)
-        .where(Activity.custom_fields["workspace_id"].astext == content_group.workspace_id)
         .where(Activity.custom_fields["channel_id"].astext == content_group.external_group_id)
         .where(Activity.activity_date.is_not(None))
         .where(Activity.activity_date <= through)
@@ -164,6 +163,7 @@ async def generate_content_group_summary_for_sync(
 
         async def _write() -> dict[str, Any]:
             async with get_session(organization_id=organization_id) as session:
+                summarized_through_at = candidates[-1].activity_date or sync_through_at
                 row = ContentGroupSummary(
                     organization_id=UUID(organization_id),
                     content_group_id=UUID(content_group_id),
@@ -173,7 +173,7 @@ async def generate_content_group_summary_for_sync(
                     last_message_external_id=candidates[-1].source_id,
                     first_message_at=candidates[0].activity_date or sync_through_at,
                     last_message_at=candidates[-1].activity_date or sync_through_at,
-                    summarized_through_at=sync_through_at,
+                    summarized_through_at=summarized_through_at,
                     message_count=len(candidates),
                     model=llm_config.workflow_model or llm_config.primary_model,
                     prompt_version=PROMPT_VERSION,

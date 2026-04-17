@@ -296,9 +296,9 @@ async def _dispatch_content_group_summaries_for_sync_window(
             )
             .where(Activity.organization_id == org_uuid)
             .where(Activity.source_system == provider)
-            .where(Activity.activity_date.is_not(None))
-            .where(Activity.activity_date >= sync_started_at)
-            .where(Activity.activity_date <= sync_completed_at)
+            .where(Activity.synced_at.is_not(None))
+            .where(Activity.synced_at >= sync_started_at)
+            .where(Activity.synced_at <= sync_completed_at)
             .where(Activity.custom_fields.is_not(None))
             .where(Activity.custom_fields["workspace_id"].astext.is_not(None))
             .where(Activity.custom_fields["channel_id"].astext.is_not(None))
@@ -308,23 +308,45 @@ async def _dispatch_content_group_summaries_for_sync_window(
         for workspace_id, channel_id, thread_id, channel_name in rows:
             if not workspace_id or not channel_id:
                 continue
-            insert_stmt = pg_insert(ContentGroup).values(
-                organization_id=org_uuid,
-                platform=provider,
-                workspace_id=str(workspace_id),
-                external_group_id=str(channel_id),
-                external_thread_id=str(thread_id) if thread_id else None,
-                name=str(channel_name) if channel_name else None,
-            )
-            upsert_stmt = insert_stmt.on_conflict_do_update(
-                constraint="uq_content_groups_key",
-                set_={
-                    "name": str(channel_name) if channel_name else None,
-                    "is_active": True,
-                    "updated_at": datetime.utcnow(),
-                },
-            ).returning(ContentGroup.id)
-            cg_id = (await session.execute(upsert_stmt)).scalar_one()
+            thread_id_str = str(thread_id) if thread_id else None
+            name = str(channel_name) if channel_name else None
+            existing = None
+            if thread_id_str is None:
+                existing_stmt = (
+                    select(ContentGroup.id)
+                    .where(ContentGroup.organization_id == org_uuid)
+                    .where(ContentGroup.platform == provider)
+                    .where(ContentGroup.workspace_id == str(workspace_id))
+                    .where(ContentGroup.external_group_id == str(channel_id))
+                    .where(ContentGroup.external_thread_id.is_(None))
+                    .limit(1)
+                )
+                existing = (await session.execute(existing_stmt)).scalar_one_or_none()
+            if existing is not None:
+                await session.execute(
+                    ContentGroup.__table__.update()
+                    .where(ContentGroup.id == existing)
+                    .values(name=name, is_active=True, updated_at=datetime.utcnow())
+                )
+                cg_id = existing
+            else:
+                insert_stmt = pg_insert(ContentGroup).values(
+                    organization_id=org_uuid,
+                    platform=provider,
+                    workspace_id=str(workspace_id),
+                    external_group_id=str(channel_id),
+                    external_thread_id=thread_id_str,
+                    name=name,
+                )
+                upsert_stmt = insert_stmt.on_conflict_do_update(
+                    constraint="uq_content_groups_key",
+                    set_={
+                        "name": name,
+                        "is_active": True,
+                        "updated_at": datetime.utcnow(),
+                    },
+                ).returning(ContentGroup.id)
+                cg_id = (await session.execute(upsert_stmt)).scalar_one()
             content_group_ids.append(str(cg_id))
         await session.commit()
 
