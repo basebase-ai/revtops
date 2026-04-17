@@ -157,7 +157,6 @@ async def global_exception_handler(request: Request, exc: Exception) -> JSONResp
 # Routes
 app.include_router(apps.router, prefix="/api/apps", tags=["apps"])
 app.include_router(public.router, prefix="/api/public", tags=["public"])
-app.include_router(public.share_router, tags=["public"])
 app.include_router(connectors.router, prefix="/api/connectors", tags=["connectors"])
 app.include_router(artifacts.router, prefix="/api/artifacts", tags=["artifacts"])
 app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
@@ -184,6 +183,9 @@ app.include_router(whatsapp_events.router, prefix="/api/whatsapp", tags=["whatsa
 app.include_router(teams_events.router, prefix="/api/teams", tags=["teams"])
 app.include_router(action_ledger.router, prefix="/api", tags=["action-ledger"])
 app.include_router(admin_dashboard.router, prefix="/api/admin-dashboard", tags=["admin-dashboard"])
+# Keep share router after /api routers so generic org-slug routes (e.g. /{org_slug}/artifacts/{id})
+# do not shadow concrete API endpoints like /api/artifacts/{id}.
+app.include_router(public.share_router, tags=["public"])
 
 # WebSocket - authenticated via JWT token in query parameter
 app.add_api_websocket_route("/ws/chat", websocket_endpoint)
