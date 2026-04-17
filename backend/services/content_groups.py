@@ -36,6 +36,48 @@ def _normalize_content_group_key(message_ctx: dict[str, Any], platform: str) -> 
     }
 
 
+def _build_content_group_upsert(
+    *,
+    organization_id: UUID,
+    platform: str,
+    workspace_id: str,
+    external_group_id: str,
+    external_thread_id: str | None,
+    name: str | None,
+):
+    insert_stmt = pg_insert(ContentGroup).values(
+        organization_id=organization_id,
+        platform=platform,
+        workspace_id=workspace_id,
+        external_group_id=external_group_id,
+        external_thread_id=external_thread_id,
+        name=name,
+        is_active=True,
+    )
+
+    update_values = {
+        "name": name,
+        "updated_at": datetime.now(UTC),
+        "is_active": True,
+    }
+    if external_thread_id is None:
+        return insert_stmt.on_conflict_do_update(
+            index_elements=[
+                "organization_id",
+                "platform",
+                "workspace_id",
+                "external_group_id",
+            ],
+            index_where=ContentGroup.external_thread_id.is_(None),
+            set_=update_values,
+        ).returning(ContentGroup.id)
+
+    return insert_stmt.on_conflict_do_update(
+        constraint="uq_content_groups_key",
+        set_=update_values,
+    ).returning(ContentGroup.id)
+
+
 async def resolve_content_group_from_message(
     message_ctx: dict[str, Any], organization_id: str, platform: str
 ) -> ContentGroup | None:
@@ -71,23 +113,14 @@ async def resolve_content_group_from_message(
                 group.updated_at = datetime.now(UTC)
 
         if group is None:
-            insert_stmt = pg_insert(ContentGroup).values(
+            upsert_stmt = _build_content_group_upsert(
                 organization_id=org_uuid,
                 platform=key["platform"],
                 workspace_id=key["workspace_id"],
                 external_group_id=key["external_group_id"],
                 external_thread_id=key["external_thread_id"],
                 name=key["name"],
-                is_active=True,
             )
-            upsert_stmt = insert_stmt.on_conflict_do_update(
-                constraint="uq_content_groups_key",
-                set_={
-                    "name": key["name"],
-                    "updated_at": datetime.now(UTC),
-                    "is_active": True,
-                },
-            ).returning(ContentGroup.id)
 
             group_id = (await session.execute(upsert_stmt)).scalar_one()
             group = await session.get(ContentGroup, group_id)

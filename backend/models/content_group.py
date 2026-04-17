@@ -27,6 +27,15 @@ class ContentGroup(Base):
         ),
         Index("ix_content_groups_org_platform_workspace", "organization_id", "platform", "workspace_id"),
         Index("ix_content_groups_org_platform_group", "organization_id", "platform", "external_group_id"),
+        Index(
+            "uq_content_groups_channel_non_thread",
+            "organization_id",
+            "platform",
+            "workspace_id",
+            "external_group_id",
+            unique=True,
+            postgresql_where=text("external_thread_id IS NULL"),
+        ),
         {"extend_existing": True},
     )
 

@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from types import SimpleNamespace
+from uuid import UUID
 
 import pytest
 
-from services.content_groups import _normalize_content_group_key
+from services.content_groups import _build_content_group_upsert, _normalize_content_group_key
 from services.context_pack import build_incoming_message_context_pack
 
 
@@ -38,6 +39,33 @@ def test_normalize_content_group_key_teams_reply_chain() -> None:
     assert out is not None
     assert out["external_group_id"] == "19:abc@thread.v2"
     assert out["external_thread_id"] == "17000"
+
+
+def test_content_group_upsert_non_thread_uses_partial_unique_index() -> None:
+    stmt = _build_content_group_upsert(
+        organization_id=UUID("00000000-0000-0000-0000-000000000000"),
+        platform="slack",
+        workspace_id="T123",
+        external_group_id="C123",
+        external_thread_id=None,
+        name="eng",
+    )
+    sql = str(stmt)
+    assert "ON CONFLICT (organization_id, platform, workspace_id, external_group_id)" in sql
+    assert "WHERE external_thread_id IS NULL" in sql
+
+
+def test_content_group_upsert_thread_uses_full_unique_constraint() -> None:
+    stmt = _build_content_group_upsert(
+        organization_id=UUID("00000000-0000-0000-0000-000000000000"),
+        platform="slack",
+        workspace_id="T123",
+        external_group_id="C123",
+        external_thread_id="1710000.01",
+        name="eng",
+    )
+    sql = str(stmt)
+    assert "ON CONFLICT ON CONSTRAINT uq_content_groups_key" in sql
 
 
 @pytest.mark.asyncio
