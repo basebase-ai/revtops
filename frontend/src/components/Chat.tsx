@@ -2834,6 +2834,7 @@ export function Chat({
         <InviteParticipantModal
           conversationId={chatId}
           teamMembers={teamMembersData?.members ?? []}
+          participants={conversationParticipants}
           existingParticipantIds={new Set(conversationParticipants.map((p) => p.id))}
           currentUserId={userId}
           onClose={() => setShowInviteModal(false)}
@@ -2856,18 +2857,28 @@ export function Chat({
             // Clear any suggested invites since participants list has changed
             useChatStore.getState().clearConversationSuggestedInvites(chatId);
           }}
+          onParticipantRemoved={(removedUserId) => {
+            setConversationParticipants((prev) => {
+              const remaining = prev.filter((p) => p.id !== removedUserId);
+              useChatStore.getState().setChatParticipants(chatId, remaining);
+              return remaining;
+            });
+            useChatStore.getState().clearConversationSuggestedInvites(chatId);
+          }}
         />
       )}
     </div>
   );
 }
 
-type InvitedParticipant = {
+type ConversationParticipant = {
   id: string;
   name: string | null;
   email: string;
   avatarUrl?: string | null;
 };
+
+type InvitedParticipant = ConversationParticipant;
 
 /**
  * Modal for adding teammates to a private conversation (multi-select, search).
@@ -2875,21 +2886,26 @@ type InvitedParticipant = {
 function InviteParticipantModal({
   conversationId,
   teamMembers,
+  participants,
   existingParticipantIds,
   currentUserId,
   onClose,
   onParticipantsAdded,
+  onParticipantRemoved,
 }: {
   conversationId: string;
   teamMembers: readonly TeamMember[];
+  participants: readonly ConversationParticipant[];
   existingParticipantIds: ReadonlySet<string>;
   currentUserId: string;
   onClose: () => void;
   onParticipantsAdded: (participants: InvitedParticipant[]) => void;
+  onParticipantRemoved: (userId: string) => void;
 }): JSX.Element {
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [selectedIds, setSelectedIds] = useState<ReadonlySet<string>>(() => new Set<string>());
   const [isLoading, setIsLoading] = useState<boolean>(false);
+  const [removingUserId, setRemovingUserId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const selectableMembers: readonly TeamMember[] = useMemo(() => {
@@ -2981,6 +2997,26 @@ function InviteParticipantModal({
     onClose();
   };
 
+  const handleRemoveParticipant = useCallback(async (userId: string): Promise<void> => {
+    setError(null);
+    setRemovingUserId(userId);
+    try {
+      const { error: removeError } = await apiRequest(
+        `/chat/conversations/${conversationId}/participants/${userId}`,
+        { method: 'DELETE' },
+      );
+      if (removeError) {
+        setError(removeError);
+        return;
+      }
+      onParticipantRemoved(userId);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to remove participant');
+    } finally {
+      setRemovingUserId(null);
+    }
+  }, [conversationId, onParticipantRemoved]);
+
   const selectedCount: number = selectedIds.size;
 
   return (
@@ -2999,6 +3035,36 @@ function InviteParticipantModal({
           </button>
         </div>
         <div className="p-4 flex flex-col min-h-0 flex-1">
+          {participants.length > 0 && (
+            <>
+              <p className="text-sm font-medium text-surface-300 mb-2">People in this conversation</p>
+              <ul className="mb-3 max-h-36 overflow-y-auto rounded-lg border border-surface-700 bg-surface-850 divide-y divide-surface-800">
+                {participants.map((participant) => {
+                  const label: string = participant.name?.trim() || participant.email;
+                  const isCurrentUser: boolean = participant.id === currentUserId;
+                  return (
+                    <li key={participant.id} className="flex items-center gap-2 px-3 py-2">
+                      <Avatar user={participant} size="sm" className="flex-shrink-0" />
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate text-sm text-surface-200">{label}</div>
+                        <div className="truncate text-xs text-surface-500">{participant.email}</div>
+                      </div>
+                      {!isCurrentUser && (
+                        <button
+                          type="button"
+                          disabled={removingUserId === participant.id}
+                          onClick={() => void handleRemoveParticipant(participant.id)}
+                          className="px-2 py-1 text-xs font-medium rounded border border-red-700/60 text-red-300 hover:bg-red-900/30 disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          {removingUserId === participant.id ? 'Removing…' : 'Remove'}
+                        </button>
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+            </>
+          )}
           <label htmlFor="invite-teammate-search" className="block text-sm font-medium text-surface-300 mb-2">
             Search teammates
           </label>
