@@ -814,6 +814,11 @@ export function DataSources(): JSX.Element {
           setIspotClientSecret('');
           setIspotError(null);
           setShowIspotForm(true);
+        } else {
+          // Unknown custom_credentials provider — the classifier should only
+          // route mcp/ispot_tv here. Surface loudly instead of silently no-op'ing.
+          console.error(`[DataSources] No custom_credentials form registered for provider "${provider}"`);
+          throw new Error(`Connector "${provider}" is mis-configured: no credential form is registered.`);
         }
         return;
       }
