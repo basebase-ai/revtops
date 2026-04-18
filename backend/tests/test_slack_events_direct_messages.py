@@ -82,6 +82,86 @@ def test_process_event_callback_passes_thread_ts_for_direct_message_thread(monke
     assert msg.message_id == "1700000000.002"
 
 
+def test_process_event_callback_does_not_persist_activity_for_private_group_channels(monkeypatch) -> None:
+    persisted: list[tuple[str, str]] = []
+
+    async def _fake_is_duplicate_event(_event_id: str) -> bool:
+        return False
+
+    async def _fake_process_inbound(self, _message: InboundMessage):
+        return {"status": "success"}
+
+    async def _fake_persist_activity(_messenger, message: InboundMessage, _team_id: str) -> None:
+        persisted.append(
+            (
+                message.messenger_context.get("channel_type"),
+                message.messenger_context.get("channel_id"),
+            )
+        )
+
+    monkeypatch.setattr(slack_events, "is_duplicate_event", _fake_is_duplicate_event)
+    monkeypatch.setattr(slack_events, "_persist_activity", _fake_persist_activity)
+    monkeypatch.setattr(SlackMessenger, "process_inbound", _fake_process_inbound)
+
+    payload = {
+        "type": "event_callback",
+        "event_id": "EvPrivateGroup1",
+        "team_id": "T123",
+        "event": {
+            "type": "message",
+            "channel_type": "group",
+            "channel": "G123",
+            "user": "U123",
+            "text": "private channel message",
+            "ts": "1700000000.123",
+        },
+    }
+
+    asyncio.run(slack_events._process_event_callback_impl(payload))
+
+    assert persisted == []
+
+
+def test_process_event_callback_persists_activity_for_public_channels(monkeypatch) -> None:
+    persisted: list[tuple[str, str]] = []
+
+    async def _fake_is_duplicate_event(_event_id: str) -> bool:
+        return False
+
+    async def _fake_process_inbound(self, _message: InboundMessage):
+        return {"status": "success"}
+
+    async def _fake_persist_activity(_messenger, message: InboundMessage, _team_id: str) -> None:
+        persisted.append(
+            (
+                message.messenger_context.get("channel_type"),
+                message.messenger_context.get("channel_id"),
+            )
+        )
+
+    monkeypatch.setattr(slack_events, "is_duplicate_event", _fake_is_duplicate_event)
+    monkeypatch.setattr(slack_events, "_persist_activity", _fake_persist_activity)
+    monkeypatch.setattr(SlackMessenger, "process_inbound", _fake_process_inbound)
+
+    payload = {
+        "type": "event_callback",
+        "event_id": "EvPublicChannel1",
+        "team_id": "T123",
+        "event": {
+            "type": "message",
+            "channel_type": "channel",
+            "channel": "C123",
+            "user": "U123",
+            "text": "public channel message",
+            "ts": "1700000000.124",
+        },
+    }
+
+    asyncio.run(slack_events._process_event_callback_impl(payload))
+
+    assert persisted == [("channel", "C123")]
+
+
 def test_process_event_callback_records_failure_when_background_processing_raises(monkeypatch) -> None:
     captured: dict[str, object] = {}
 

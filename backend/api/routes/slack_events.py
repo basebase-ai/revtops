@@ -333,13 +333,21 @@ async def _process_event_callback_impl(payload: dict[str, Any]) -> None:
         if event.get("subtype") in ("message_changed", "message_deleted"):
             return
 
-        # Persist non-DM channel messages as Activity rows
-        if channel_type != "im" and event.get("text", "").strip():
+        # Persist only public channel messages as Activity rows.
+        # Treat private channels and group messages like DMs and skip activity persistence.
+        should_persist_activity: bool = channel_type == "channel"
+        if should_persist_activity and event.get("text", "").strip():
             activity_msg: InboundMessage = _build_inbound_message(
                 event, team_id, MessageType.MENTION,
             )
             asyncio.create_task(
                 _persist_activity(messenger, activity_msg, team_id)
+            )
+        elif channel_type in {"group", "private_channel", "mpim", "im", "groupchat"}:
+            logger.info(
+                "[slack_events] Skipping activity persistence for private/direct message type=%s channel=%s",
+                channel_type,
+                event.get("channel", ""),
             )
 
         is_direct_message: bool = channel_type in {"im", "mpim"}

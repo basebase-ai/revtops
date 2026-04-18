@@ -322,6 +322,40 @@ def _activity_mentions_bot(activity: dict[str, Any], bot_id: str | None) -> bool
     return False
 
 
+def _is_public_teams_channel_message(activity: dict[str, Any]) -> bool:
+    """Return True only for standard/public Teams channel messages."""
+    conversation: dict[str, Any] = activity.get("conversation") or {}
+    conversation_type: str = (conversation.get("conversationType") or "").strip().lower()
+    if conversation_type != "channel":
+        return False
+
+    channel_data: dict[str, Any] = activity.get("channelData") or {}
+    channel_raw: Any = channel_data.get("channel") if isinstance(channel_data, dict) else {}
+    channel: dict[str, Any] = channel_raw if isinstance(channel_raw, dict) else {}
+    membership_type: str = (channel.get("membershipType") or "").strip().lower()
+
+    # Teams exposes "standard" for public channels; private/shared channels should not be persisted.
+    if membership_type and membership_type != "standard":
+        logger.info(
+            "[teams_events] Skipping activity persistence for non-public channel membership_type=%s conversation_id=%s",
+            membership_type,
+            conversation.get("id", ""),
+        )
+        return False
+
+    return True
+
+
+async def _persist_activity(message: InboundMessage, tenant_id: str) -> None:
+    """Persist a Teams channel message as an Activity row for analytics."""
+    try:
+        org_id: str | None = await TeamsMessenger()._resolve_org_from_workspace(tenant_id)
+        if org_id:
+            await TeamsMessenger().persist_channel_activity(message, org_id)
+    except Exception as exc:
+        logger.error("[teams_events] Failed to persist activity: %s", exc)
+
+
 async def _process_message_activity(activity: dict[str, Any]) -> None:
     """Handle message activity: route to DIRECT, MENTION, or THREAD_REPLY."""
     try:
@@ -348,6 +382,19 @@ async def _process_message_activity(activity: dict[str, Any]) -> None:
 
         if activity.get("from", {}).get("id") == bot_id:
             return
+
+        if _is_public_teams_channel_message(activity):
+            activity_message: InboundMessage = _build_inbound_message(
+                activity,
+                MessageType.MENTION,
+            )
+            asyncio.create_task(_persist_activity(activity_message, tenant_id))
+        else:
+            logger.info(
+                "[teams_events] Not persisting activity for conversation_type=%s conversation_id=%s",
+                conversation_type,
+                conv_id,
+            )
 
         # 1:1 personal chat -> DIRECT
         # (group chats set conversationType=groupChat and/or isGroup=true)
