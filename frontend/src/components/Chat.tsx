@@ -2037,26 +2037,38 @@ export function Chat({
               )}
             </div>
           )}
-          {/* Scope: read-only chip; owner changes visibility from ⋮ menu */}
+          {/* Scope: clickable pill toggle for conversation creator */}
           {chatId && (() => {
             const isShared: boolean = conversationScope === 'shared';
             const chipStatic: string =
               'inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium uppercase tracking-wide';
             const chipShared: string = `${chipStatic} bg-primary-500/15 text-primary-400/90`;
             const chipPrivate: string = `${chipStatic} bg-surface-700 text-surface-400`;
+            const nextScopeLabel: string = isShared ? 'private' : 'shared';
 
             return (
-              <span
-                className={`${isShared ? chipShared : chipPrivate} shrink-0 ${scopeToggleSaving ? 'opacity-70' : ''}`}
+              <button
+                type="button"
+                disabled={!canToggleChatScope || scopeToggleSaving}
+                aria-label={`Make conversation ${nextScopeLabel}`}
+                className={`${isShared ? chipShared : chipPrivate} shrink-0 transition-colors disabled:cursor-default ${canToggleChatScope ? 'cursor-pointer hover:brightness-110' : ''} ${scopeToggleSaving ? 'opacity-70' : ''}`}
                 title={
                   canToggleChatScope
                     ? isShared
-                      ? 'Shared with team — use ⋮ menu to make private'
-                      : 'Private — use ⋮ menu to share with team'
+                      ? 'Shared with team — click to make private'
+                      : 'Private — click to share with team'
                     : isShared
                       ? 'Shared with team'
                       : 'Only the conversation creator can change visibility'
                 }
+                onClick={() => {
+                  if (!canToggleChatScope || scopeToggleSaving) return;
+                  if (isShared) {
+                    void handleMakePrivate();
+                    return;
+                  }
+                  void handleMakeShared();
+                }}
               >
                 {scopeToggleSaving ? (
                   <span
@@ -2072,7 +2084,7 @@ export function Chat({
                     Private
                   </>
                 )}
-              </span>
+              </button>
             );
           })()}
           {/* Uncommitted changes indicator */}
