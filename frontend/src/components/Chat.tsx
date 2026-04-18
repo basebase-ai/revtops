@@ -1587,9 +1587,10 @@ export function Chat({
 
   const canToggleChatScope: boolean =
     userId != null &&
-    conversationCreatorId != null &&
-    conversationCreatorId === userId &&
-    Boolean(chatId);
+    (
+      !chatId ||
+      (conversationCreatorId != null && conversationCreatorId === userId)
+    );
 
   const togglePinChat = useAppStore((s) => s.togglePinChat);
   const pinnedChatIds = useAppStore((s) => s.pinnedChatIds);
@@ -1686,7 +1687,12 @@ export function Chat({
 
   // Convert private conversation to shared (optimistic UI + revert on error)
   const handleMakeShared = useCallback(async () => {
-    if (!chatId || scopePatchInFlightRef.current) return;
+    if (!chatId) {
+      setNewConversationScope('shared');
+      setConversationScope('shared');
+      return;
+    }
+    if (scopePatchInFlightRef.current) return;
     scopePatchInFlightRef.current = true;
 
     const prevScope = conversationScope;
@@ -1732,7 +1738,12 @@ export function Chat({
 
   // Convert shared conversation to private (creator only); optimistic + revert on error
   const handleMakePrivate = useCallback(async () => {
-    if (!chatId || scopePatchInFlightRef.current) return;
+    if (!chatId) {
+      setNewConversationScope('private');
+      setConversationScope('private');
+      return;
+    }
+    if (scopePatchInFlightRef.current) return;
     scopePatchInFlightRef.current = true;
 
     const prevScope = conversationScope;
@@ -2038,8 +2049,8 @@ export function Chat({
             </div>
           )}
           {/* Scope: clickable pill toggle for conversation creator */}
-          {chatId && (() => {
-            const isShared: boolean = conversationScope === 'shared';
+          {(() => {
+            const isShared: boolean = (chatId ? conversationScope : newConversationScope) === 'shared';
             const chipStatic: string =
               'inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium uppercase tracking-wide';
             const chipShared: string = `${chipStatic} bg-primary-500/15 text-primary-400/90`;
