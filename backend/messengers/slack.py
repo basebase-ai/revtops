@@ -192,10 +192,53 @@ class SlackMessenger(WorkspaceMessenger):
             snapshot_context: str = self._build_channel_snapshot_context(history_context=history_context)
             workflow_context: dict[str, Any] = dict(ctx.get("workflow_context") or {})
             prior_snapshot_context: str = str(workflow_context.get("slack_recent_channel_context") or "").strip()
+            prior_latest_ts: str = str(workflow_context.get("slack_recent_channel_latest_ts") or "").strip()
+            latest_ts_in_payload: str = self._get_latest_slack_ts(channel_messages)
+            if prior_snapshot_context and prior_latest_ts and latest_ts_in_payload and latest_ts_in_payload <= prior_latest_ts:
+                logger.info(
+                    "[slack] Skipping channel context append; no newer cached messages workspace=%s channel=%s prior_latest_ts=%s",
+                    workspace_id,
+                    channel_id,
+                    prior_latest_ts,
+                )
+                return
+
+            if prior_snapshot_context and prior_latest_ts and channel_messages:
+                (
+                    channel_messages,
+                    thread_expansions,
+                ) = self._filter_channel_payload_for_new_messages(
+                    channel_messages=channel_messages,
+                    thread_expansions=thread_expansions,
+                    latest_seen_ts=prior_latest_ts,
+                )
+                if not channel_messages:
+                    logger.info(
+                        "[slack] Skipping channel context append; no new messages after ts=%s workspace=%s channel=%s",
+                        prior_latest_ts,
+                        workspace_id,
+                        channel_id,
+                    )
+                    return
+                history_context = self._format_channel_history_context(
+                    channel_messages=channel_messages,
+                    thread_expansions=thread_expansions,
+                )
+                if not history_context:
+                    return
+                history_context = self._summarize_channel_history_if_needed(
+                    history_context=history_context,
+                    channel_messages=channel_messages,
+                    thread_expansions=thread_expansions,
+                )
+                snapshot_context = self._build_channel_snapshot_context(history_context=history_context)
+                latest_ts_in_payload = self._get_latest_slack_ts(channel_messages)
             workflow_context["slack_recent_channel_context"] = self._append_channel_snapshot_context(
                 prior_snapshot_context=prior_snapshot_context,
                 latest_snapshot_context=snapshot_context,
             )
+            if latest_ts_in_payload:
+                workflow_context["slack_recent_channel_latest_ts"] = latest_ts_in_payload
             ctx["workflow_context"] = workflow_context
             logger.info(
                 "[slack] Attached recent channel context for channel=%s workspace=%s channel_messages=%d expanded_threads=%d",
@@ -552,6 +595,69 @@ class SlackMessenger(WorkspaceMessenger):
             len(combined_context),
         )
         return trimmed_context
+
+    def _get_latest_slack_ts(self, channel_messages: list[dict[str, Any]]) -> str:
+        """Return the most recent Slack ``ts`` from top-level channel messages."""
+        if not channel_messages:
+            return ""
+        latest_ts = 0.0
+        latest_ts_text = ""
+        for message in channel_messages:
+            ts_value: str = str(message.get("ts") or "").strip()
+            if not ts_value:
+                continue
+            try:
+                ts_numeric = float(ts_value)
+            except Exception:
+                continue
+            if ts_numeric > latest_ts:
+                latest_ts = ts_numeric
+                latest_ts_text = ts_value
+        return latest_ts_text
+
+    def _filter_channel_payload_for_new_messages(
+        self,
+        *,
+        channel_messages: list[dict[str, Any]],
+        thread_expansions: dict[str, list[dict[str, Any]]],
+        latest_seen_ts: str,
+    ) -> tuple[list[dict[str, Any]], dict[str, list[dict[str, Any]]]]:
+        """Filter payload down to messages newer than ``latest_seen_ts``."""
+        try:
+            latest_seen_ts_numeric = float(latest_seen_ts)
+        except Exception:
+            return channel_messages, thread_expansions
+
+        filtered_messages: list[dict[str, Any]] = []
+        filtered_thread_expansions: dict[str, list[dict[str, Any]]] = {}
+        for message in channel_messages:
+            ts_value: str = str(message.get("ts") or "").strip()
+            try:
+                ts_numeric = float(ts_value)
+            except Exception:
+                continue
+            if ts_numeric <= latest_seen_ts_numeric:
+                continue
+            filtered_messages.append(message)
+            thread_ts: str = str(message.get("thread_ts") or ts_value).strip()
+            if not thread_ts:
+                continue
+            replies: list[dict[str, Any]] = thread_expansions.get(thread_ts) or []
+            if not replies:
+                continue
+            filtered_replies: list[dict[str, Any]] = []
+            for reply in replies:
+                reply_ts_value: str = str(reply.get("ts") or "").strip()
+                try:
+                    reply_ts_numeric = float(reply_ts_value)
+                except Exception:
+                    continue
+                if reply_ts_numeric > latest_seen_ts_numeric:
+                    filtered_replies.append(reply)
+            if filtered_replies:
+                filtered_thread_expansions[thread_ts] = filtered_replies
+
+        return filtered_messages, filtered_thread_expansions
 
     async def _resolve_user_mentions_in_text(
         self,
