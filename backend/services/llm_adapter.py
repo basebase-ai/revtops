@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Literal, Protocol
 
 from anthropic import APIStatusError as AnthropicAPIStatusError, AsyncAnthropic
-from openai import AsyncOpenAI
+from openai import APIStatusError as OpenAIAPIStatusError, AsyncOpenAI
 
 logger = logging.getLogger(__name__)
 
@@ -343,6 +343,40 @@ class OpenAIAdapter:
             and f"'{token_param_name}'" in message
         )
 
+    @staticmethod
+    def _is_unsupported_token_param_api_error(
+        exc: OpenAIAPIStatusError, *, token_param_name: str
+    ) -> bool:
+        """
+        Return true when the API rejects the chosen token parameter name.
+
+        This surfaces as a 400-level APIStatusError (not a TypeError) when the
+        SDK accepts the kwarg but upstream OpenAI-compatible backends do not.
+        """
+        body: Any = exc.body
+        if not isinstance(body, dict):
+            return False
+
+        error = body.get("error")
+        if not isinstance(error, dict):
+            return False
+
+        message = error.get("message")
+        if not isinstance(message, str):
+            return False
+
+        lowered_message = message.lower()
+        if token_param_name.lower() not in lowered_message:
+            return False
+
+        unsupported_markers = (
+            "unknown parameter",
+            "unsupported parameter",
+            "unrecognized request argument",
+            "extra inputs are not permitted",
+        )
+        return any(marker in lowered_message for marker in unsupported_markers)
+
     async def _create_chat_completion_with_token_fallback(
         self, *, model: str, max_tokens: int, **api_kwargs: Any
     ) -> Any:
@@ -386,6 +420,34 @@ class OpenAIAdapter:
                     "rejected_token_param": preferred_token_param,
                     "fallback_token_param": fallback_token_param,
                     "token_limit": max_tokens,
+                },
+            )
+            fallback_kwargs: dict[str, Any] = {
+                "model": model,
+                **api_kwargs,
+                fallback_token_param: max_tokens,
+            }
+            return await self._client.chat.completions.create(**fallback_kwargs)
+        except OpenAIAPIStatusError as exc:
+            if not self._is_unsupported_token_param_api_error(
+                exc,
+                token_param_name=preferred_token_param,
+            ):
+                raise
+
+            fallback_token_param = (
+                "max_tokens"
+                if preferred_token_param == "max_completion_tokens"
+                else "max_completion_tokens"
+            )
+            logger.warning(
+                "OpenAI API rejected token limit parameter; retrying with fallback",
+                extra={
+                    "model": model,
+                    "rejected_token_param": preferred_token_param,
+                    "fallback_token_param": fallback_token_param,
+                    "token_limit": max_tokens,
+                    "status_code": exc.status_code,
                 },
             )
             fallback_kwargs: dict[str, Any] = {
