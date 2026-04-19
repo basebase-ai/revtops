@@ -25,3 +25,20 @@ def test_resolve_llm_config_uses_provider_defaults_for_mismatched_global_models(
     assert config.provider == "openai"
     assert config.primary_model == "gpt-5"
     assert config.cheap_model == "gpt-5-mini"
+
+
+def test_resolve_llm_config_logs_when_model_fallback_engaged(monkeypatch, caplog) -> None:
+    from services import llm_provider
+
+    monkeypatch.setattr(llm_provider, "_DEFAULT_PROVIDER", "openai")
+    monkeypatch.setitem(llm_provider._GLOBAL_PROVIDER_KEYS, "openai", "test-openai-key")
+    monkeypatch.setattr(llm_provider.settings, "DEFAULT_PRIMARY_MODEL", "claude-opus-4-6")
+    monkeypatch.setattr(llm_provider.settings, "DEFAULT_CHEAP_MODEL", "")
+    monkeypatch.setattr(llm_provider.settings, "ALL_MODEL_STRINGS", "")
+
+    caplog.set_level("INFO")
+    _ = asyncio.run(resolve_llm_config(None))
+
+    assert any(
+        "Model fallback engaged (quick/same-family)" in record.message for record in caplog.records
+    )

@@ -2083,8 +2083,15 @@ async def _openai_web_search_fallback(
     prompt_context = context_answer or "No useful Perplexity context was available."
     additional_context = (provider_context or "").strip()
 
-    for model in OPENAI_WEB_RESEARCH_FALLBACK_MODELS:
+    for model_index, model in enumerate(OPENAI_WEB_RESEARCH_FALLBACK_MODELS):
         try:
+            if model_index > 0:
+                logger.info(
+                    "[Tools._openai_web_search_fallback] Model fallback engaged (quick/same-family): previous_model=%s selected_model=%s fallback_position=%s",
+                    OPENAI_WEB_RESEARCH_FALLBACK_MODELS[model_index - 1],
+                    model,
+                    model_index + 1,
+                )
             logger.info(
                 "[Tools._openai_web_search_fallback] Running OpenAI fallback with model=%s",
                 model,
