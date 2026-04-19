@@ -334,6 +334,62 @@ class OpenAIAdapter:
         )
         return {token_param_name: max_tokens}
 
+    @staticmethod
+    def _is_unexpected_token_kwarg_error(exc: TypeError, *, token_param_name: str) -> bool:
+        """Return true when OpenAI SDK rejects the chosen token argument name."""
+        message = str(exc)
+        return (
+            "unexpected keyword argument" in message
+            and f"'{token_param_name}'" in message
+        )
+
+    async def _create_chat_completion_with_token_fallback(
+        self, *, model: str, max_tokens: int, **api_kwargs: Any
+    ) -> Any:
+        """
+        Create a chat completion and transparently retry with the alternate token kwarg.
+
+        Some client/runtime combinations can temporarily disagree on whether
+        `max_tokens` or `max_completion_tokens` is accepted, even for the same model.
+        We optimistically use model-based selection first, then retry once with the
+        alternate parameter only when the SDK raises an unexpected-kwarg TypeError.
+        """
+        preferred_token_kwargs = self._build_token_limit_kwargs(
+            model=model,
+            max_tokens=max_tokens,
+        )
+        preferred_token_param = next(iter(preferred_token_kwargs))
+        request_kwargs: dict[str, Any] = {**api_kwargs, **preferred_token_kwargs}
+
+        try:
+            return await self._client.chat.completions.create(**request_kwargs)
+        except TypeError as exc:
+            if not self._is_unexpected_token_kwarg_error(
+                exc,
+                token_param_name=preferred_token_param,
+            ):
+                raise
+
+            fallback_token_param = (
+                "max_tokens"
+                if preferred_token_param == "max_completion_tokens"
+                else "max_completion_tokens"
+            )
+            logger.warning(
+                "OpenAI chat completion rejected token limit kwarg; retrying with fallback",
+                extra={
+                    "model": model,
+                    "rejected_token_param": preferred_token_param,
+                    "fallback_token_param": fallback_token_param,
+                    "token_limit": max_tokens,
+                },
+            )
+            fallback_kwargs: dict[str, Any] = {
+                **api_kwargs,
+                fallback_token_param: max_tokens,
+            }
+            return await self._client.chat.completions.create(**fallback_kwargs)
+
     # -- streaming ----------------------------------------------------------
 
     async def stream(
@@ -355,14 +411,17 @@ class OpenAIAdapter:
             "messages": api_messages,
             "stream": True,
         }
-        api_kwargs.update(self._build_token_limit_kwargs(model=model, max_tokens=max_tokens))
         if tools:
             api_kwargs["tools"] = self.format_tools(tools)
 
         tool_calls_accum: dict[int, dict[str, str]] = {}
         current_text_started: bool = False
 
-        stream = await self._client.chat.completions.create(**api_kwargs)
+        stream = await self._create_chat_completion_with_token_fallback(
+            model=model,
+            max_tokens=max_tokens,
+            **api_kwargs,
+        )
         async for chunk in stream:
             choice = chunk.choices[0] if chunk.choices else None
             if choice is None:
@@ -443,10 +502,10 @@ class OpenAIAdapter:
             {"role": "system", "content": system}
         ] + self.format_messages_for_api(messages)
 
-        response = await self._client.chat.completions.create(
+        response = await self._create_chat_completion_with_token_fallback(
             model=model,
             messages=api_messages,
-            **self._build_token_limit_kwargs(model=model, max_tokens=max_tokens),
+            max_tokens=max_tokens,
         )
         blocks: list[ContentBlock] = self.build_completed_content(response)
         usage = response.usage
