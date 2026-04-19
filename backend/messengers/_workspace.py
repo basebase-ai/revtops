@@ -723,14 +723,15 @@ class WorkspaceMessenger(BaseMessenger):
         attachment_ids: list[str] | None = None,
         organization_id: str | None = None,
         on_message_posted: Any | None = None,
-    ) -> int:
+    ) -> tuple[int, bool, str | None]:
         """Stream orchestrator output and post text segments incrementally.
 
         Flushes happen when a tool-call boundary arrives, the buffer reaches
         ``STREAM_FLUSH_CHAR_THRESHOLD``, or ``STREAM_FLUSH_INTERVAL_SECONDS``
         elapsed since last flush.
 
-        Returns total character count of all posted text.
+        Returns:
+            tuple of (total posted character count, query_failed, failure_reason).
         """
         ctx: dict[str, Any] = message.messenger_context
         channel_id: str = ctx.get("channel_id", "")
@@ -739,6 +740,8 @@ class WorkspaceMessenger(BaseMessenger):
 
         current_text: str = ""
         total_length: int = 0
+        query_failed: bool = False
+        failure_reason: str | None = None
         last_flush_at: float = time.monotonic()
         posted_tool_statuses: dict[str, tuple[str, str]] = {}
 
@@ -794,10 +797,12 @@ class WorkspaceMessenger(BaseMessenger):
                         await _flush(reason="buffer_size" if size_flush else "interval")
         except Exception as exc:
             logger.error("[%s] Error during streaming: %s", self.meta.slug, exc, exc_info=True)
+            query_failed = True
+            failure_reason = str(exc)
             current_text += user_message_for_agent_stream_failure(exc)
 
         await _flush(reason="stream_end", force=True)
-        return total_length
+        return total_length, query_failed, failure_reason
 
     def format_tool_status_for_display(self, status_text: str) -> str:
         """Format status text for this platform (e.g. Slack may wrap in italics). Default: return as-is."""
@@ -1043,12 +1048,14 @@ class WorkspaceMessenger(BaseMessenger):
                     {response_task}, timeout=SLOW_REPLY_TIMEOUT_SECONDS,
                 )
                 if response_task in done:
-                    total: int = response_task.result()
+                    total, query_failed, failure_reason = response_task.result()
                     await self.remove_typing_indicator(message)
                     result = {
                         "status": "success",
                         "conversation_id": conversation_id,
                         "response_length": total,
+                        "query_failed": query_failed,
+                        "failure_reason": failure_reason,
                     }
                     return result
 
@@ -1057,12 +1064,14 @@ class WorkspaceMessenger(BaseMessenger):
                     get_last_message_sent_at=lambda: last_message_sent_at,
                 )
                 if response_task.done():
-                    total = response_task.result()
+                    total, query_failed, failure_reason = response_task.result()
                     await self.remove_typing_indicator(message)
                     result = {
                         "status": "success",
                         "conversation_id": conversation_id,
                         "response_length": total,
+                        "query_failed": query_failed,
+                        "failure_reason": failure_reason,
                     }
                     return result
 
