@@ -723,14 +723,15 @@ class WorkspaceMessenger(BaseMessenger):
         attachment_ids: list[str] | None = None,
         organization_id: str | None = None,
         on_message_posted: Any | None = None,
-    ) -> int:
+    ) -> tuple[int, str | None]:
         """Stream orchestrator output and post text segments incrementally.
 
         Flushes happen when a tool-call boundary arrives, the buffer reaches
         ``STREAM_FLUSH_CHAR_THRESHOLD``, or ``STREAM_FLUSH_INTERVAL_SECONDS``
         elapsed since last flush.
 
-        Returns total character count of all posted text.
+        Returns total character count of all posted text and an optional
+        stream failure reason when fallback copy was emitted.
         """
         ctx: dict[str, Any] = message.messenger_context
         channel_id: str = ctx.get("channel_id", "")
@@ -741,6 +742,7 @@ class WorkspaceMessenger(BaseMessenger):
         total_length: int = 0
         last_flush_at: float = time.monotonic()
         posted_tool_statuses: dict[str, tuple[str, str]] = {}
+        stream_failure_reason: str | None = None
 
         async def _flush(*, reason: str, force: bool = False) -> None:
             nonlocal current_text, total_length, last_flush_at
@@ -794,10 +796,11 @@ class WorkspaceMessenger(BaseMessenger):
                         await _flush(reason="buffer_size" if size_flush else "interval")
         except Exception as exc:
             logger.error("[%s] Error during streaming: %s", self.meta.slug, exc, exc_info=True)
+            stream_failure_reason = str(exc)
             current_text += user_message_for_agent_stream_failure(exc)
 
         await _flush(reason="stream_end", force=True)
-        return total_length
+        return total_length, stream_failure_reason
 
     def format_tool_status_for_display(self, status_text: str) -> str:
         """Format status text for this platform (e.g. Slack may wrap in italics). Default: return as-is."""
@@ -1029,7 +1032,7 @@ class WorkspaceMessenger(BaseMessenger):
                     nonlocal last_message_sent_at
                     last_message_sent_at = time.monotonic()
 
-                response_task: asyncio.Task[int] = asyncio.create_task(
+                response_task: asyncio.Task[tuple[int, str | None]] = asyncio.create_task(
                     self.stream_and_post_responses(
                         orchestrator=orchestrator,
                         message=message,
@@ -1043,13 +1046,16 @@ class WorkspaceMessenger(BaseMessenger):
                     {response_task}, timeout=SLOW_REPLY_TIMEOUT_SECONDS,
                 )
                 if response_task in done:
-                    total: int = response_task.result()
+                    total, stream_failure_reason = response_task.result()
                     await self.remove_typing_indicator(message)
                     result = {
                         "status": "success",
                         "conversation_id": conversation_id,
                         "response_length": total,
+                        "degraded": stream_failure_reason is not None,
                     }
+                    if stream_failure_reason:
+                        result["failure_reason"] = stream_failure_reason
                     return result
 
                 await self._wait_for_slow_reply_window(
@@ -1057,13 +1063,16 @@ class WorkspaceMessenger(BaseMessenger):
                     get_last_message_sent_at=lambda: last_message_sent_at,
                 )
                 if response_task.done():
-                    total = response_task.result()
+                    total, stream_failure_reason = response_task.result()
                     await self.remove_typing_indicator(message)
                     result = {
                         "status": "success",
                         "conversation_id": conversation_id,
                         "response_length": total,
+                        "degraded": stream_failure_reason is not None,
                     }
+                    if stream_failure_reason:
+                        result["failure_reason"] = stream_failure_reason
                     return result
 
                 # Slow path: notify user and continue in background

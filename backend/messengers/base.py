@@ -335,6 +335,8 @@ class BaseMessenger(ABC):
 
             full_response: str = ""
             outbound_media_urls: list[str] = []
+            stream_failed: bool = False
+            stream_failure_reason: str | None = None
             try:
                 async for chunk in orchestrator.process_message(
                     message_text,
@@ -352,6 +354,8 @@ class BaseMessenger(ABC):
                     self.meta.slug,
                     conversation_id,
                 )
+                stream_failed = True
+                stream_failure_reason = str(exc)
                 full_response += user_message_for_agent_stream_failure(exc)
 
             # 7. Format and deliver
@@ -381,7 +385,10 @@ class BaseMessenger(ABC):
                 "status": "success",
                 "conversation_id": conversation_id,
                 "response_length": len(response_text),
+                "degraded": stream_failed,
             }
+            if stream_failed:
+                result["failure_reason"] = stream_failure_reason or "stream_failed"
             return result
         except Exception as exc:
             caught_error = exc
@@ -446,6 +453,8 @@ class BaseMessenger(ABC):
             return False
         if not result:
             return False
+        if result.get("degraded") is True:
+            return False
         status = result.get("status")
         if status == "success":
             return True
@@ -476,6 +485,11 @@ class BaseMessenger(ABC):
             return str(error)
         if not result:
             return "empty_result"
+        if result.get("degraded") is True:
+            degraded_reason = result.get("failure_reason")
+            if isinstance(degraded_reason, str) and degraded_reason:
+                return degraded_reason
+            return "stream_failed"
 
         if isinstance(result.get("error"), str) and result.get("error"):
             return str(result["error"])

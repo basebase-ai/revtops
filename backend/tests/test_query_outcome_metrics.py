@@ -32,12 +32,23 @@ def test_failed_query_outcome_classification() -> None:
         result={"status": "success"},
         error=RuntimeError("boom"),
     )
+    assert not BaseMessenger._is_successful_query_outcome(
+        result={"status": "success", "degraded": True, "failure_reason": "stream_failed"},
+        error=None,
+    )
 
 
 def test_timeout_continuing_is_excluded_from_query_outcome_consideration() -> None:
     assert BaseMessenger._should_skip_query_outcome(result={"status": "timeout_continuing"})
     assert not BaseMessenger._should_skip_query_outcome(result={"status": "success"})
     assert not BaseMessenger._should_skip_query_outcome(result=None)
+
+
+def test_derive_failed_query_reason_prefers_degraded_reason() -> None:
+    assert BaseMessenger._derive_failed_query_reason(
+        result={"status": "success", "degraded": True, "failure_reason": "transport_error"},
+        error=None,
+    ) == "transport_error"
 
 
 def test_get_query_outcome_window_stats() -> None:
