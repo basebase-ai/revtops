@@ -143,6 +143,12 @@ def _select_compatible_model(
 ) -> str:
     """Return a model compatible with provider, falling back when needed."""
     if not requested_model:
+        logger.info(
+            "[LLMProvider] Model fallback engaged (quick/same-family): role=%s provider=%s requested_model=<unset> selected_model=%s reason=missing_requested_model",
+            model_role,
+            provider,
+            fallback_model,
+        )
         return fallback_model
 
     mapped_provider: str | None = provider_for_model(requested_model)
@@ -155,6 +161,14 @@ def _select_compatible_model(
             mapped_provider,
             fallback_model,
         )
+        logger.info(
+            "[LLMProvider] Model fallback engaged (quick/same-family): role=%s provider=%s requested_model=%s selected_model=%s reason=provider_mismatch(mapped=%s)",
+            model_role,
+            provider,
+            requested_model,
+            fallback_model,
+            mapped_provider,
+        )
         return fallback_model
 
     inferred_provider: str | None = _infer_provider_from_model_name(requested_model)
@@ -166,6 +180,14 @@ def _select_compatible_model(
             provider,
             inferred_provider,
             fallback_model,
+        )
+        logger.info(
+            "[LLMProvider] Model fallback engaged (quick/same-family): role=%s provider=%s requested_model=%s selected_model=%s reason=provider_mismatch(inferred=%s)",
+            model_role,
+            provider,
+            requested_model,
+            fallback_model,
+            inferred_provider,
         )
         return fallback_model
 
