@@ -1359,7 +1359,6 @@ class ChatOrchestrator:
 
         # Prepare messages for the target provider's API format
         tool_defs = get_tool_defs_for_context(self.workflow_context)
-        is_anthropic_family: bool = self._llm_config.provider in ("anthropic", "minimax")
 
         while True:
             # Track state for this streaming response
@@ -1371,11 +1370,9 @@ class ChatOrchestrator:
             final_message_received: bool = False
             context_retry_needed = False
 
-            # Translate messages for OpenAI-family providers
-            api_messages: list[dict[str, Any]] = (
-                messages if is_anthropic_family
-                else adapter.format_messages_for_api(messages)  # type: ignore[union-attr]
-            )
+            # Keep provider-agnostic message history here; provider adapters are
+            # responsible for final API translation.
+            api_messages: list[dict[str, Any]] = messages
 
             # Retry loop for transient API errors
             last_error: Exception | None = None
