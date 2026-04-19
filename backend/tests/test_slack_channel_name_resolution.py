@@ -249,3 +249,385 @@ async def test_enrich_message_context_keeps_unresolved_mentions_unchanged():
         await messenger.enrich_message_context(message, org_id)
 
     assert message.text == original
+
+
+@pytest.mark.asyncio
+async def test_inject_recent_channel_context_appends_refreshed_snapshot():
+    messenger = SlackMessenger()
+    message = InboundMessage(
+        text="hello",
+        message_type=MessageType.MENTION,
+        external_user_id="U123",
+        message_id="123.456",
+        messenger_context={
+            "workspace_id": "T123",
+            "channel_id": "C456",
+            "channel_type": "channel",
+            "workflow_context": {
+                "slack_recent_channel_context": "Slack snapshot fetched_at=2026-04-17T00:00:00+00:00\nprior snapshot",
+            },
+        },
+    )
+
+    mock_connector = AsyncMock()
+    mock_connector.get_channel_messages.return_value = [
+        {"ts": "1710711600.000", "user": "U_A", "text": "fresh message", "reply_count": 0}
+    ]
+
+    with patch.object(messenger, "_get_connector", return_value=mock_connector):
+        await messenger._inject_recent_channel_context(
+            message=message,
+            workspace_id="T123",
+            channel_id="C456",
+        )
+
+    updated = message.messenger_context["workflow_context"]["slack_recent_channel_context"]
+    assert "prior snapshot" in updated
+    assert "fresh message" in updated
+    assert "\n\n---\n\n" in updated
+    assert updated.count("Slack snapshot fetched_at=") == 2
+
+
+@pytest.mark.asyncio
+async def test_inject_recent_channel_context_only_appends_new_cached_messages():
+    messenger = SlackMessenger()
+    org_id = str(uuid4())
+    message = InboundMessage(
+        text="hello",
+        message_type=MessageType.MENTION,
+        external_user_id="U123",
+        message_id="123.456",
+        messenger_context={
+            "workspace_id": "T123",
+            "channel_id": "C456",
+            "organization_id": org_id,
+            "channel_type": "channel",
+            "workflow_context": {
+                "slack_recent_channel_context": "Slack snapshot fetched_at=2026-04-17T00:00:00+00:00\nprior snapshot",
+                "slack_recent_channel_latest_ts": "1710711600.100",
+            },
+        },
+    )
+
+    cached_payload = (
+        [
+            {"ts": "1710711600.200", "thread_ts": "1710711600.200", "user": "U_A", "text": "new cached message"},
+            {"ts": "1710711600.050", "thread_ts": "1710711600.050", "user": "U_B", "text": "old cached message"},
+        ],
+        {},
+    )
+    with patch.object(
+        messenger,
+        "_get_cached_channel_context_payload_from_activity",
+        AsyncMock(return_value=cached_payload),
+    ):
+        await messenger._inject_recent_channel_context(
+            message=message,
+            workspace_id="T123",
+            channel_id="C456",
+        )
+
+    updated = message.messenger_context["workflow_context"]["slack_recent_channel_context"]
+    assert "prior snapshot" in updated
+    assert "new cached message" in updated
+    assert "old cached message" not in updated
+    assert message.messenger_context["workflow_context"]["slack_recent_channel_latest_ts"] == "1710711600.200"
+
+
+@pytest.mark.asyncio
+async def test_inject_recent_channel_context_skips_append_when_no_new_cached_messages():
+    messenger = SlackMessenger()
+    org_id = str(uuid4())
+    prior_context = "Slack snapshot fetched_at=2026-04-17T00:00:00+00:00\nprior snapshot"
+    message = InboundMessage(
+        text="hello",
+        message_type=MessageType.MENTION,
+        external_user_id="U123",
+        message_id="123.456",
+        messenger_context={
+            "workspace_id": "T123",
+            "channel_id": "C456",
+            "organization_id": org_id,
+            "channel_type": "channel",
+            "workflow_context": {
+                "slack_recent_channel_context": prior_context,
+                "slack_recent_channel_latest_ts": "1710711600.300",
+            },
+        },
+    )
+
+    cached_payload = (
+        [
+            {"ts": "1710711600.100", "thread_ts": "1710711600.100", "user": "U_A", "text": "older message"},
+            {"ts": "1710711600.200", "thread_ts": "1710711600.200", "user": "U_B", "text": "still old"},
+        ],
+        {},
+    )
+    with patch.object(
+        messenger,
+        "_get_cached_channel_context_payload_from_activity",
+        AsyncMock(return_value=cached_payload),
+    ):
+        await messenger._inject_recent_channel_context(
+            message=message,
+            workspace_id="T123",
+            channel_id="C456",
+        )
+
+    assert message.messenger_context["workflow_context"]["slack_recent_channel_context"] == prior_context
+    assert message.messenger_context["workflow_context"]["slack_recent_channel_latest_ts"] == "1710711600.300"
+
+
+@pytest.mark.asyncio
+async def test_inject_recent_channel_context_skips_direct_messages():
+    messenger = SlackMessenger()
+    message = InboundMessage(
+        text="hello",
+        message_type=MessageType.DIRECT,
+        external_user_id="U123",
+        message_id="123.456",
+        messenger_context={
+            "workspace_id": "T123",
+            "channel_id": "D456",
+            "organization_id": str(uuid4()),
+        },
+    )
+
+    with (
+        patch.object(messenger, "_get_connector", AsyncMock(side_effect=AssertionError("should not fetch connector"))),
+        patch.object(
+            messenger,
+            "_get_cached_channel_context_payload_from_activity",
+            AsyncMock(side_effect=AssertionError("should not read channel cache for DMs")),
+        ),
+    ):
+        await messenger._inject_recent_channel_context(
+            message=message,
+            workspace_id="T123",
+            channel_id="D456",
+        )
+
+    assert "workflow_context" not in message.messenger_context
+
+
+def test_summarize_channel_history_if_needed_returns_original_when_within_limit():
+    messenger = SlackMessenger()
+    history = "short history"
+    result = messenger._summarize_channel_history_if_needed(
+        history_context=history,
+        channel_messages=[],
+        thread_expansions={},
+    )
+    assert result == history
+
+
+def test_summarize_channel_history_if_needed_compresses_oversized_payload():
+    messenger = SlackMessenger()
+    channel_messages = [
+        {
+            "ts": "1710711600.100",
+            "user": "U1",
+            "text": "Kickoff update " + ("A" * 600),
+            "thread_ts": "1710711600.100",
+            "reply_count": 2,
+        },
+        {
+            "ts": "1710711601.200",
+            "user": "U2",
+            "text": "Follow up " + ("B" * 600),
+            "thread_ts": "1710711601.200",
+            "reply_count": 1,
+        },
+    ]
+    thread_expansions = {
+        "1710711600.100": [
+            {
+                "ts": "1710711600.100",
+                "user": "U1",
+                "text": "Kickoff update " + ("A" * 600),
+            },
+            {
+                "ts": "1710711600.300",
+                "user": "U3",
+                "text": "Reply in first thread " + ("C" * 300),
+            },
+            {
+                "ts": "1710711600.400",
+                "user": "U4",
+                "text": "Another reply " + ("D" * 300),
+            },
+        ],
+        "1710711601.200": [
+            {
+                "ts": "1710711601.200",
+                "user": "U2",
+                "text": "Follow up " + ("B" * 600),
+            },
+            {
+                "ts": "1710711601.250",
+                "user": "U5",
+                "text": "Reply in second thread " + ("E" * 300),
+            },
+        ],
+    }
+    oversized_history = "X" * 26000
+
+    result = messenger._summarize_channel_history_if_needed(
+        history_context=oversized_history,
+        channel_messages=channel_messages,
+        thread_expansions=thread_expansions,
+    )
+
+    assert "quick summary of newest 300 channel messages" in result
+    assert "Most active threads by reply count" in result
+    assert len(result) <= 12000
+
+
+def test_append_channel_snapshot_context_trims_to_max_chars():
+    messenger = SlackMessenger()
+    prior = "A" * 20000
+    latest = "B" * 10000
+
+    result = messenger._append_channel_snapshot_context(
+        prior_snapshot_context=prior,
+        latest_snapshot_context=latest,
+    )
+
+    assert len(result) == 24000
+    assert result.endswith("B" * 10000)
+
+
+@pytest.mark.asyncio
+async def test_inject_recent_channel_context_prefers_activity_cache():
+    messenger = SlackMessenger()
+    workspace_id = "T123"
+    channel_id = "C456"
+
+    inbound_message = InboundMessage(
+        text="new message",
+        message_type=MessageType.MENTION,
+        external_user_id="U999",
+        message_id="1710711700.000",
+        messenger_context={
+            "workspace_id": workspace_id,
+            "channel_id": channel_id,
+            "channel_type": "channel",
+            "organization_id": str(uuid4()),
+        },
+    )
+    mock_result = MagicMock()
+    mock_result.all.return_value = [
+        (
+            f"{channel_id}:1710711600.000",
+            "cached msg 1",
+            {"channel_id": channel_id, "user_id": "U1", "thread_ts": "1710711600.000"},
+            None,
+            None,
+        ),
+        (
+            f"{channel_id}:1710711600.100",
+            "cached msg 2",
+            {"channel_id": channel_id, "user_id": "U2", "thread_ts": "1710711600.000"},
+            None,
+            None,
+        ),
+    ]
+    mock_session = AsyncMock()
+    mock_session.execute.return_value = mock_result
+    mock_session_ctx = MagicMock(
+        __aenter__=AsyncMock(return_value=mock_session),
+        __aexit__=AsyncMock(return_value=None),
+    )
+    mock_connector = AsyncMock()
+    mock_connector.get_channel_messages.side_effect = AssertionError("should use activity cache first")
+
+    with (
+        patch.object(messenger, "_get_connector", return_value=mock_connector),
+        patch("messengers.slack.get_admin_session", return_value=mock_session_ctx),
+    ):
+        await messenger._inject_recent_channel_context(
+            message=inbound_message,
+            workspace_id=workspace_id,
+            channel_id=channel_id,
+        )
+
+    context_payload = inbound_message.messenger_context["workflow_context"]["slack_recent_channel_context"]
+    assert "cached msg" in context_payload
+
+
+@pytest.mark.asyncio
+async def test_inject_recent_channel_context_falls_back_when_cached_payload_is_empty():
+    messenger = SlackMessenger()
+    message = InboundMessage(
+        text="hello",
+        message_type=MessageType.MENTION,
+        external_user_id="U123",
+        message_id="123.456",
+        messenger_context={
+            "workspace_id": "T123",
+            "channel_id": "C456",
+            "channel_type": "channel",
+            "organization_id": str(uuid4()),
+        },
+    )
+
+    mock_connector = AsyncMock()
+    mock_connector.get_channel_messages.return_value = [
+        {"ts": "1710711600.000", "user": "U_A", "text": "live message", "reply_count": 0}
+    ]
+
+    with (
+        patch.object(messenger, "_get_connector", return_value=mock_connector),
+        patch.object(
+            messenger,
+            "_get_cached_channel_context_payload_from_activity",
+            AsyncMock(return_value=([], {})),
+        ),
+    ):
+        await messenger._inject_recent_channel_context(
+            message=message,
+            workspace_id="T123",
+            channel_id="C456",
+        )
+
+    mock_connector.get_channel_messages.assert_awaited_once()
+    context_payload = message.messenger_context["workflow_context"]["slack_recent_channel_context"]
+    assert "live message" in context_payload
+
+
+def test_build_channel_context_payload_groups_thread_without_parent_message():
+    messenger = SlackMessenger()
+    payload = messenger._build_channel_context_payload_from_cached_messages(
+        [
+            {
+                "ts": "1710711600.300",
+                "thread_ts": "1710711600.100",
+                "user": "U2",
+                "text": "reply one",
+            },
+            {
+                "ts": "1710711600.100",
+                "thread_ts": "1710711600.100",
+                "user": "U1",
+                "text": "thread first message",
+            },
+            {
+                "ts": "1710711600.500",
+                "thread_ts": "1710711600.100",
+                "user": "U3",
+                "text": "reply two",
+            },
+        ]
+    )
+
+    top_level_messages, thread_expansions = payload
+    assert len(top_level_messages) == 1
+    assert top_level_messages[0]["ts"] == "1710711600.100"
+    assert top_level_messages[0]["thread_ts"] == "1710711600.100"
+    assert top_level_messages[0]["reply_count"] == 2
+    assert "1710711600.100" in thread_expansions
+    assert [item["ts"] for item in thread_expansions["1710711600.100"]] == [
+        "1710711600.100",
+        "1710711600.300",
+        "1710711600.500",
+    ]
