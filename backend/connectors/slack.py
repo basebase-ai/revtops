@@ -1241,14 +1241,33 @@ Returns normalized messages for one channel since a cutoff (does not write to th
                 return await self.post_message(channel, text, thread_ts=thread_ts)
             raise ValueError("send_message requires 'channel' or 'user_id' and non-empty text")
         if action == "fetch_channel_history":
-            ch: str | None = params.get("channel")
+            ch: str | None = (
+                params.get("channel")
+                or params.get("channel_id")
+                or params.get("channelId")
+            )
             since_val: str | None = params.get("since")
             if not ch or not str(ch).strip():
-                raise ValueError("fetch_channel_history requires 'channel'")
+                logger.error(
+                    "[slack] fetch_channel_history missing channel params_keys=%s",
+                    sorted(params.keys()),
+                )
+                raise ValueError("fetch_channel_history requires 'channel' (or 'channel_id')")
             if not since_val or not str(since_val).strip():
+                logger.error(
+                    "[slack] fetch_channel_history missing since channel=%s params_keys=%s",
+                    ch,
+                    sorted(params.keys()),
+                )
                 raise ValueError("fetch_channel_history requires 'since' (ISO 8601 datetime)")
             limit_raw: Any = params.get("limit", 1000)
             limit_val: int = int(limit_raw) if limit_raw is not None else 1000
+            logger.info(
+                "[slack] execute_action fetch_channel_history channel=%s since=%s limit=%s",
+                ch,
+                since_val,
+                limit_val,
+            )
             return await self.fetch_channel_history(
                 str(ch).strip(),
                 str(since_val).strip(),
