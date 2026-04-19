@@ -300,6 +300,7 @@ def _pdf_block(sf: StoredFile) -> dict[str, Any]:
     b64: str = base64.standard_b64encode(sf.data).decode("ascii")
     return {
         "type": "document",
+        "title": sf.filename,
         "source": {
             "type": "base64",
             "media_type": "application/pdf",

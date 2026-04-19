@@ -307,8 +307,10 @@ class AnthropicAdapter:
             return msg
 
         from services.file_handler import StoredFile, pdf_to_text_block
+        import base64 as _b64
 
         new_blocks: list[dict[str, Any]] = []
+        pdf_counter: int = 0
         for block in content:
             if not isinstance(block, dict) or block.get("type") != "document":
                 new_blocks.append(block)
@@ -319,11 +321,25 @@ class AnthropicAdapter:
                 new_blocks.append(block)
                 continue
 
-            import base64
-            raw_data: bytes = base64.standard_b64decode(source.get("data", ""))
+            pdf_counter += 1
+            filename: str = (
+                block.get("title")
+                or f"attachment-{pdf_counter}.pdf"
+            )
+
+            try:
+                raw_data: bytes = _b64.standard_b64decode(source.get("data", ""))
+            except Exception as exc:
+                logger.warning("Failed to decode PDF base64 for %s: %s", filename, exc)
+                new_blocks.append({
+                    "type": "text",
+                    "text": f"[Attached PDF '{filename}' could not be decoded]",
+                })
+                continue
+
             sf = StoredFile(
                 upload_id="",
-                filename="attachment.pdf",
+                filename=filename,
                 mime_type="application/pdf",
                 size=len(raw_data),
                 data=raw_data,
