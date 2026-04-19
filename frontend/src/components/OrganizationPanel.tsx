@@ -223,8 +223,8 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
           llm_primary_model?: string | null;
           llm_cheap_model?: string | null;
           llm_workflow_model?: string | null;
-        }>(`/auth/organizations/${encodeURIComponent(organization.id)}?user_id=${encodeURIComponent(currentUser.id)}`),
-        apiRequest<{ models: Record<string, string> }>('/auth/llm-options'),
+        }>(`/auth/organizations/${encodeURIComponent(organization.id)}?user_id=${encodeURIComponent(currentUser.id)}`, { cache: 'no-store' }),
+        apiRequest<{ models: Record<string, string> }>('/auth/llm-options', { cache: 'no-store' }),
       ]);
 
       if (organizationError) {
@@ -257,7 +257,13 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
   }, [organization.id, currentUser.id]);
 
   useEffect(() => {
+    // Always refresh once on panel mount to avoid stale cross-tab model defaults.
+    void loadFreshModelSettings();
+  }, [loadFreshModelSettings]);
+
+  useEffect(() => {
     if (activeTab !== 'settings') return;
+    // Refresh again when opening settings in case values changed while panel was open.
     void loadFreshModelSettings();
   }, [activeTab, loadFreshModelSettings]);
 
