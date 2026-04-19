@@ -359,7 +359,11 @@ class OpenAIAdapter:
             max_tokens=max_tokens,
         )
         preferred_token_param = next(iter(preferred_token_kwargs))
-        request_kwargs: dict[str, Any] = {**api_kwargs, **preferred_token_kwargs}
+        request_kwargs: dict[str, Any] = {
+            "model": model,
+            **api_kwargs,
+            **preferred_token_kwargs,
+        }
 
         try:
             return await self._client.chat.completions.create(**request_kwargs)
@@ -385,6 +389,7 @@ class OpenAIAdapter:
                 },
             )
             fallback_kwargs: dict[str, Any] = {
+                "model": model,
                 **api_kwargs,
                 fallback_token_param: max_tokens,
             }
@@ -407,7 +412,6 @@ class OpenAIAdapter:
         ] + self.format_messages_for_api(messages)
 
         api_kwargs: dict[str, Any] = {
-            "model": model,
             "messages": api_messages,
             "stream": True,
         }
@@ -422,6 +426,7 @@ class OpenAIAdapter:
             max_tokens=max_tokens,
             **api_kwargs,
         )
+        chunk: Any | None = None
         async for chunk in stream:
             choice = chunk.choices[0] if chunk.choices else None
             if choice is None:
