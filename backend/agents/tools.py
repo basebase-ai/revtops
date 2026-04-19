@@ -1151,6 +1151,7 @@ async def _run_on_connector(
     context: dict[str, Any] | None,
 ) -> dict[str, Any]:
     """Dispatch an action to an ACTION-capable connector."""
+    logger.info("[Tools] run_on_connector called with keys=%s", sorted(params.keys()))
     connector: str = (params.get("connector") or "").strip()
     action: str = (params.get("action") or "").strip()
     raw_action_params: Any = params.get("params") or {}
@@ -1162,6 +1163,23 @@ async def _run_on_connector(
             logger.warning("[Tools] run_on_connector: failed to parse params string: %s", exc)
             return {"error": f"params must be a JSON object (parse error: {exc})"}
     action_params: dict[str, Any] = dict(raw_action_params)
+    # Be lenient if the caller accidentally sends action fields at top-level
+    # instead of nesting under `params` (common tool-calling mistake).
+    if not action_params:
+        fallback_params: dict[str, Any] = {
+            key: value
+            for key, value in params.items()
+            if key not in {"connector", "action", "params"}
+        }
+        if fallback_params:
+            logger.info(
+                "[Tools] run_on_connector(%s, %s): recovered %d top-level param(s): %s",
+                connector or "<missing>",
+                action or "<missing>",
+                len(fallback_params),
+                sorted(fallback_params.keys()),
+            )
+            action_params = fallback_params
 
     if not connector:
         return {"error": "connector is required"}

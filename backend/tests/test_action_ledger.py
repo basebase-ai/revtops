@@ -667,6 +667,37 @@ class TestChokepoints:
         mock_intent.assert_called_once()
         mock_outcome.assert_called_once()
 
+    def test_run_on_connector_recovers_top_level_action_params(self) -> None:
+        """_run_on_connector should recover action params accidentally passed at top-level."""
+        from agents import tools
+
+        fake_instance = MagicMock()
+        fake_instance.execute_action = AsyncMock(return_value={"ok": True})
+
+        with patch.object(tools, "_get_connector_instance", new=AsyncMock(return_value=(fake_instance, None))), \
+             patch.object(tools, "check_connector_call", new=AsyncMock(return_value=MagicMock(allowed=True))), \
+             patch("services.action_ledger.record_intent", new=AsyncMock(return_value=uuid.uuid4())), \
+             patch("services.action_ledger.record_outcome", new=AsyncMock()):
+
+            result = asyncio.run(tools._run_on_connector(
+                params={
+                    "connector": "slack",
+                    "action": "fetch_channel_history",
+                    "channel": "C123",
+                    "since": "2026-01-01T00:00:00Z",
+                },
+                organization_id="org-1",
+                user_id="user-1",
+                skip_approval=True,
+                context=None,
+            ))
+
+        assert result == {"ok": True}
+        fake_instance.execute_action.assert_awaited_once_with(
+            "fetch_channel_history",
+            {"channel": "C123", "since": "2026-01-01T00:00:00Z"},
+        )
+
 
 # ---------------------------------------------------------------------------
 # Migration: validate revision chain
