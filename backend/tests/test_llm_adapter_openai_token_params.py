@@ -31,6 +31,15 @@ def test_openai_legacy_models_use_max_tokens():
     }
 
 
+def test_openai_gpt5_with_provider_prefix_uses_max_completion_tokens():
+    adapter = OpenAIAdapter(api_key="test-key")
+
+    assert adapter._build_token_limit_kwargs(
+        model="openai/GPT-5-mini",
+        max_tokens=777,
+    ) == {"max_completion_tokens": 777}
+
+
 @pytest.mark.asyncio
 async def test_openai_token_kwarg_falls_back_when_preferred_is_rejected():
     adapter = OpenAIAdapter(api_key="test-key")

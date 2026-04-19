@@ -320,7 +320,8 @@ class OpenAIAdapter:
     def _build_token_limit_kwargs(self, *, model: str, max_tokens: int) -> dict[str, int]:
         """Map token limit parameter name based on OpenAI model requirements."""
         # Newer reasoning families (e.g. gpt-5 / o-series) reject `max_tokens`.
-        uses_completion_tokens: bool = model.startswith(("gpt-5", "o"))
+        normalized_model: str = model.strip().lower().split("/")[-1]
+        uses_completion_tokens: bool = normalized_model.startswith(("gpt-5", "o"))
         token_param_name: str = (
             "max_completion_tokens" if uses_completion_tokens else "max_tokens"
         )
@@ -328,6 +329,7 @@ class OpenAIAdapter:
             "OpenAI token limit param selected",
             extra={
                 "model": model,
+                "normalized_model": normalized_model,
                 "token_param_name": token_param_name,
                 "token_limit": max_tokens,
             },
