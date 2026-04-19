@@ -32,6 +32,23 @@ def test_failed_query_outcome_classification() -> None:
         result={"status": "success"},
         error=RuntimeError("boom"),
     )
+    assert not BaseMessenger._is_successful_query_outcome(
+        result={"status": "success", "query_failed": True},
+        error=None,
+    )
+
+
+def test_failed_query_outcome_reason_prefers_query_failure_reason() -> None:
+    reason = BaseMessenger._derive_failed_query_reason(
+        result={
+            "status": "success",
+            "query_failed": True,
+            "failure_reason": "provider timeout",
+            "error": "should_not_win",
+        },
+        error=None,
+    )
+    assert reason == "provider timeout"
 
 
 def test_timeout_continuing_is_excluded_from_query_outcome_consideration() -> None:

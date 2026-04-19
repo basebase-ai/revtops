@@ -335,6 +335,7 @@ class BaseMessenger(ABC):
 
             full_response: str = ""
             outbound_media_urls: list[str] = []
+            orchestrator_error: Exception | None = None
             try:
                 async for chunk in orchestrator.process_message(
                     message_text,
@@ -347,6 +348,7 @@ class BaseMessenger(ABC):
                     else:
                         full_response += chunk
             except Exception as exc:
+                orchestrator_error = exc
                 logger.exception(
                     "[%s] Orchestrator error conversation=%s",
                     self.meta.slug,
@@ -381,6 +383,8 @@ class BaseMessenger(ABC):
                 "status": "success",
                 "conversation_id": conversation_id,
                 "response_length": len(response_text),
+                "query_failed": orchestrator_error is not None,
+                "failure_reason": str(orchestrator_error) if orchestrator_error else None,
             }
             return result
         except Exception as exc:
@@ -446,6 +450,8 @@ class BaseMessenger(ABC):
             return False
         if not result:
             return False
+        if result.get("query_failed"):
+            return False
         status = result.get("status")
         if status == "success":
             return True
@@ -476,6 +482,8 @@ class BaseMessenger(ABC):
             return str(error)
         if not result:
             return "empty_result"
+        if isinstance(result.get("failure_reason"), str) and result.get("failure_reason"):
+            return str(result["failure_reason"])
 
         if isinstance(result.get("error"), str) and result.get("error"):
             return str(result["error"])
