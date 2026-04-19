@@ -631,3 +631,62 @@ def test_build_channel_context_payload_groups_thread_without_parent_message():
         "1710711600.300",
         "1710711600.500",
     ]
+
+
+def test_format_channel_history_context_inserts_thread_messages_at_thread_start():
+    messenger = SlackMessenger()
+    channel_messages = [
+        {
+            "ts": "1710711602.000",
+            "thread_ts": "1710711602.000",
+            "user": "U3",
+            "text": "latest non-thread message",
+        },
+        {
+            "ts": "1710711600.000",
+            "thread_ts": "1710711600.000",
+            "user": "U1",
+            "text": "thread starter",
+        },
+        {
+            "ts": "1710711601.000",
+            "thread_ts": "1710711601.000",
+            "user": "U2",
+            "text": "middle non-thread message",
+        },
+    ]
+    thread_expansions = {
+        "1710711600.000": [
+            {
+                "ts": "1710711600.000",
+                "thread_ts": "1710711600.000",
+                "user": "U1",
+                "text": "thread starter",
+            },
+            {
+                "ts": "1710711600.200",
+                "thread_ts": "1710711600.000",
+                "user": "U4",
+                "text": "thread reply one",
+            },
+            {
+                "ts": "1710711600.400",
+                "thread_ts": "1710711600.000",
+                "user": "U5",
+                "text": "thread reply two",
+            },
+        ]
+    }
+
+    rendered = messenger._format_channel_history_context(
+        channel_messages=channel_messages,
+        thread_expansions=thread_expansions,
+    )
+
+    starter_idx = rendered.index("thread starter")
+    reply_one_idx = rendered.index("thread reply one")
+    reply_two_idx = rendered.index("thread reply two")
+    middle_non_thread_idx = rendered.index("middle non-thread message")
+    latest_non_thread_idx = rendered.index("latest non-thread message")
+
+    assert starter_idx < reply_one_idx < reply_two_idx < middle_non_thread_idx < latest_non_thread_idx
