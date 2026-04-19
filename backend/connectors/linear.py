@@ -108,7 +108,19 @@ class LinearConnector(BaseConnector):
         auth_type=AuthType.OAUTH2,
         scope=ConnectorScope.USER,
         entity_types=["teams", "projects", "issues"],
-        capabilities=[Capability.SYNC, Capability.WRITE, Capability.LISTEN],
+        capabilities=[
+            Capability.SYNC,
+            Capability.QUERY,
+            Capability.WRITE,
+            Capability.LISTEN,
+        ],
+        query_description=(
+            "Read Linear data on demand. Prefix with 'issue:' for one issue by id (e.g. 'issue:ENG-123'). "
+            "Prefix with 'issues:' plus state open|closed|all (e.g. 'issues:open team:ENG assignee:Alice label:Bug'). "
+            "Prefix with 'search:' for full-text issue search (e.g. 'search:rate limit team:ENG'). "
+            "Prefix with 'teams:', 'projects:', or 'users:' to list workspace metadata. "
+            "Prefix with 'states:' and team key for workflow states (e.g. 'states:ENG')."
+        ),
         write_operations=[
             WriteOperation(
                 name="create_issue", entity_type="issue",
@@ -204,7 +216,21 @@ Use `write_on_connector(connector='linear', operation='...', data={...})` with `
 {"operation": "update_issue", "record": {"issue_identifier": "ENG-123", "state_name": "Done"}}
 ```
 
-**Querying data:** Use `run_sql_query` on `tracker_teams`, `tracker_projects`, `tracker_issues` (filter `source_system = 'linear'`).
+## Query operations (query_on_connector)
+
+Use `query_on_connector(connector='linear', query='...')` with a prefix-based string (similar to GitHub).
+
+| Prefix | Example | Description |
+|--------|---------|-------------|
+| `issue:` | `issue:ENG-123` | Single issue with description, labels, and comments |
+| `issues:` | `issues:open team:ENG` | List issues; value is `open`, `closed`, or `all`; optional `team:KEY`, `assignee:name`, `label:name` |
+| `search:` | `search:oauth team:ENG` | Full-text issue search; optional `team:KEY` |
+| `teams:` | `teams:` | List teams (id, key, name) |
+| `projects:` | `projects:` | List non-canceled projects with extra fields |
+| `users:` | `users:` | List workspace users |
+| `states:` | `states:ENG` | Workflow states for a team key |
+
+**Also available:** synced copies in SQL via `run_sql_query` on `tracker_teams`, `tracker_projects`, `tracker_issues` (`source_system = 'linear'`) for offline comparison.
 """,
     )
 
@@ -1051,10 +1077,12 @@ Use `write_on_connector(connector='linear', operation='...', data={...})` with `
         limit: int = 20,
     ) -> list[dict[str, Any]]:
         """Search issues in Linear using the searchIssues query."""
-        # Resolve team_key to team_id if provided
+        # Resolve team_key to Linear team id if provided
         team_id: str | None = None
         if team_key:
-            team_id = await self.resolve_team_by_key(team_key)
+            team_row: dict[str, Any] | None = await self.resolve_team_by_key(team_key)
+            if team_row:
+                team_id = str(team_row["id"])
 
         gql_query: str = """
         query SearchIssues($term: String!, $first: Int, $teamId: String, $includeComments: Boolean) {
@@ -1131,6 +1159,459 @@ Use `write_on_connector(connector='linear', operation='...', data={...})` with `
             })
 
         return results
+
+    # ── QUERY capability (on-demand reads via query_on_connector) ─────────
+
+    @staticmethod
+    def _parse_query(request: str) -> tuple[str, str, dict[str, str]]:
+        """Parse a query string into (prefix, value, params).
+
+        Format: ``<prefix>:<value> [more value tokens] key:val ...``
+        First recognized prefix sets the command; further ``key:value`` tokens go to params.
+        """
+        parts: list[str] = request.strip().split()
+        prefix: str = ""
+        value: str = ""
+        params: dict[str, str] = {}
+        known_prefixes: frozenset[str] = frozenset({
+            "issue",
+            "issues",
+            "search",
+            "teams",
+            "projects",
+            "users",
+            "states",
+        })
+
+        for part in parts:
+            if ":" in part:
+                key, _, val = part.partition(":")
+                key_lower: str = key.lower()
+                if not prefix and key_lower in known_prefixes:
+                    prefix = key_lower
+                    value = val
+                else:
+                    params[key_lower] = val
+            elif not prefix:
+                value = part
+            else:
+                value += f" {part}"
+
+        return prefix, value.strip(), params
+
+    async def query(self, request: str) -> dict[str, Any]:
+        """Execute an on-demand read (QUERY capability). See ``meta.query_description``."""
+        prefix, value, params = self._parse_query(request)
+        dispatch: dict[str, Any] = {
+            "issue": self._query_issue_detail,
+            "issues": self._query_issues_list_filtered,
+            "search": self._query_search_issues,
+            "teams": self._query_teams_meta,
+            "projects": self._query_projects_meta,
+            "users": self._query_users_meta,
+            "states": self._query_team_states,
+        }
+        handler = dispatch.get(prefix)
+        if handler is None:
+            return {
+                "error": (
+                    f"Unknown query prefix '{prefix}:'. "
+                    "Supported: issue:, issues:, search:, teams:, projects:, users:, states:"
+                ),
+            }
+        return await handler(value, params)
+
+    async def _query_issue_detail(
+        self, value: str, params: dict[str, str]
+    ) -> dict[str, Any]:
+        """Fetch one issue by identifier with comments."""
+        _ = params
+        identifier: str = value.strip()
+        if not identifier:
+            return {"error": "issue: requires an issue identifier (e.g. issue:ENG-123)."}
+
+        gql_query: str = """
+        query IssueDetail($id: String!) {
+            issue(id: $id) {
+                id
+                identifier
+                title
+                description
+                url
+                priority
+                priorityLabel
+                estimate
+                dueDate
+                createdAt
+                updatedAt
+                completedAt
+                canceledAt
+                state {
+                    id
+                    name
+                    type
+                }
+                assignee {
+                    id
+                    name
+                    email
+                }
+                creator {
+                    name
+                }
+                team {
+                    id
+                    key
+                    name
+                }
+                project {
+                    id
+                    name
+                }
+                labels {
+                    nodes {
+                        id
+                        name
+                    }
+                }
+                comments(first: 50) {
+                    nodes {
+                        id
+                        body
+                        createdAt
+                        user {
+                            id
+                            name
+                        }
+                    }
+                }
+            }
+        }
+        """
+        data: dict[str, Any] = await self._gql(gql_query, {"id": identifier})
+        issue: dict[str, Any] | None = data.get("issue")
+        if not issue:
+            return {"error": f"Issue '{identifier}' not found."}
+
+        label_nodes: list[dict[str, Any]] = (
+            issue.get("labels", {}).get("nodes", [])
+        )
+        comment_nodes: list[dict[str, Any]] = (
+            issue.get("comments", {}).get("nodes", [])
+        )
+        state: dict[str, Any] | None = issue.get("state")
+        assignee: dict[str, Any] | None = issue.get("assignee")
+        team: dict[str, Any] | None = issue.get("team")
+        project: dict[str, Any] | None = issue.get("project")
+
+        comments_out: list[dict[str, Any]] = []
+        for c in comment_nodes:
+            user: dict[str, Any] | None = c.get("user")
+            comments_out.append({
+                "id": c.get("id"),
+                "body": c.get("body", ""),
+                "created_at": c.get("createdAt"),
+                "author": user.get("name", "unknown") if user else "unknown",
+            })
+
+        return {
+            "identifier": issue.get("identifier"),
+            "title": issue.get("title", ""),
+            "description": issue.get("description"),
+            "url": issue.get("url", ""),
+            "priority": issue.get("priority"),
+            "priority_label": issue.get("priorityLabel"),
+            "estimate": issue.get("estimate"),
+            "due_date": issue.get("dueDate"),
+            "created_at": issue.get("createdAt"),
+            "updated_at": issue.get("updatedAt"),
+            "completed_at": issue.get("completedAt"),
+            "canceled_at": issue.get("canceledAt"),
+            "state": state.get("name") if state else None,
+            "state_type": state.get("type") if state else None,
+            "assignee": assignee.get("name") if assignee else None,
+            "assignee_email": assignee.get("email") if assignee else None,
+            "creator": (issue.get("creator") or {}).get("name"),
+            "team_key": team.get("key") if team else None,
+            "team_name": team.get("name") if team else None,
+            "project": project.get("name") if project else None,
+            "labels": [ln.get("name") for ln in label_nodes if ln.get("name")],
+            "comment_count": len(comments_out),
+            "comments": comments_out,
+        }
+
+    def _build_issues_filter(
+        self,
+        *,
+        state_bucket: str,
+        team_id: str | None,
+        assignee_id: str | None,
+        label_name: str | None,
+    ) -> dict[str, Any]:
+        """Build Linear ``IssueFilter`` JSON for GraphQL variables."""
+        bucket: str = state_bucket.strip().lower() if state_bucket else "open"
+        if bucket not in ("open", "closed", "all"):
+            bucket = "open"
+
+        clauses: list[dict[str, Any]] = []
+
+        if team_id:
+            clauses.append({"team": {"id": {"eq": team_id}}})
+
+        if bucket == "open":
+            clauses.append({
+                "state": {"type": {"in": ["unstarted", "started"]}},
+            })
+        elif bucket == "closed":
+            clauses.append({
+                "state": {"type": {"in": ["completed", "canceled"]}},
+            })
+
+        if assignee_id:
+            clauses.append({"assignee": {"id": {"eq": assignee_id}}})
+
+        if label_name and label_name.strip():
+            clauses.append({
+                "labels": {
+                    "some": {"name": {"eq": label_name.strip()}}},
+            })
+
+        if not clauses:
+            return {}
+        if len(clauses) == 1:
+            return clauses[0]
+        return {"and": clauses}
+
+    async def _query_issues_list_filtered(
+        self, value: str, params: dict[str, str]
+    ) -> dict[str, Any]:
+        """List issues with optional team / assignee / label / state-type filters."""
+        state_bucket: str = value.strip().lower() if value else "open"
+        if state_bucket not in ("open", "closed", "all"):
+            state_bucket = "open"
+
+        team_id: str | None = None
+        team_key_param: str | None = params.get("team")
+        if team_key_param:
+            team_row: dict[str, Any] | None = await self.resolve_team_by_key(
+                team_key_param
+            )
+            if not team_row:
+                return {"error": f"Team with key '{team_key_param}' not found."}
+            team_id = str(team_row["id"])
+
+        assignee_id: str | None = None
+        assignee_name: str | None = params.get("assignee")
+        if assignee_name:
+            assignee: dict[str, Any] | None = await self.resolve_assignee_by_name(
+                assignee_name
+            )
+            if not assignee:
+                return {"error": f"Assignee '{assignee_name}' not found."}
+            assignee_id = str(assignee["id"])
+
+        label_name: str | None = params.get("label")
+
+        issue_filter: dict[str, Any] = self._build_issues_filter(
+            state_bucket=state_bucket,
+            team_id=team_id,
+            assignee_id=assignee_id,
+            label_name=label_name,
+        )
+
+        gql_query: str = """
+        query IssuesFiltered($filter: IssueFilter, $after: String) {
+            issues(first: 50, after: $after, filter: $filter, orderBy: updatedAt) {
+                nodes {
+                    id
+                    identifier
+                    title
+                    url
+                    priority
+                    priorityLabel
+                    state {
+                        name
+                        type
+                    }
+                    assignee {
+                        name
+                    }
+                    team {
+                        key
+                        name
+                    }
+                    project {
+                        name
+                    }
+                    labels {
+                        nodes {
+                            name
+                        }
+                    }
+                    updatedAt
+                }
+                pageInfo {
+                    hasNextPage
+                    endCursor
+                }
+            }
+        }
+        """
+        variables: dict[str, Any] = {"filter": issue_filter or None}
+        nodes: list[dict[str, Any]] = await self._gql_paginated(
+            gql_query,
+            ["issues"],
+            variables=variables,
+            max_pages=20,
+        )
+
+        issues_out: list[dict[str, Any]] = []
+        for issue in nodes:
+            st: dict[str, Any] | None = issue.get("state")
+            asg: dict[str, Any] | None = issue.get("assignee")
+            tm: dict[str, Any] | None = issue.get("team")
+            pr: dict[str, Any] | None = issue.get("project")
+            lbl_nodes: list[dict[str, Any]] = (
+                issue.get("labels", {}).get("nodes", [])
+            )
+            issues_out.append({
+                "identifier": issue.get("identifier"),
+                "title": issue.get("title", ""),
+                "url": issue.get("url", ""),
+                "state": st.get("name") if st else None,
+                "state_type": st.get("type") if st else None,
+                "priority_label": issue.get("priorityLabel"),
+                "assignee": asg.get("name") if asg else None,
+                "team": f"{tm['key']} ({tm['name']})" if tm else None,
+                "project": pr.get("name") if pr else None,
+                "labels": [x.get("name") for x in lbl_nodes if x.get("name")],
+                "updated_at": issue.get("updatedAt"),
+            })
+
+        return {
+            "state_filter": state_bucket,
+            "team_key": team_key_param,
+            "assignee": assignee_name,
+            "label": label_name,
+            "issue_count": len(issues_out),
+            "issues": issues_out,
+        }
+
+    async def _query_search_issues(
+        self, value: str, params: dict[str, str]
+    ) -> dict[str, Any]:
+        """Full-text search; wraps ``search_issues``."""
+        term: str = value.strip()
+        if not term:
+            return {"error": "search: requires a non-empty search term."}
+        team_key: str | None = params.get("team")
+        raw: list[dict[str, Any]] = await self.search_issues(
+            query_text=term,
+            team_key=team_key,
+            limit=50,
+        )
+        return {
+            "term": term,
+            "team_key": team_key,
+            "result_count": len(raw),
+            "issues": raw,
+        }
+
+    async def _query_teams_meta(
+        self, value: str, params: dict[str, str]
+    ) -> dict[str, Any]:
+        _ = value, params
+        teams: list[dict[str, Any]] = await self.list_teams()
+        return {"team_count": len(teams), "teams": teams}
+
+    async def _query_projects_meta(
+        self, value: str, params: dict[str, str]
+    ) -> dict[str, Any]:
+        _ = value, params
+        gql_query: str = """
+        query ProjectsQuery($after: String) {
+            projects(first: 50, after: $after, filter: { state: { nin: ["canceled"] } }) {
+                nodes {
+                    id
+                    name
+                    description
+                    state
+                    progress
+                    targetDate
+                    startDate
+                    url
+                    lead {
+                        name
+                    }
+                    teams {
+                        nodes {
+                            id
+                            key
+                            name
+                        }
+                    }
+                }
+                pageInfo {
+                    hasNextPage
+                    endCursor
+                }
+            }
+        }
+        """
+        nodes: list[dict[str, Any]] = await self._gql_paginated(
+            gql_query,
+            ["projects"],
+            variables={},
+            max_pages=20,
+        )
+        projects_out: list[dict[str, Any]] = []
+        for p in nodes:
+            lead: dict[str, Any] | None = p.get("lead")
+            team_nodes: list[dict[str, Any]] = (
+                p.get("teams", {}).get("nodes", [])
+            )
+            projects_out.append({
+                "id": p.get("id"),
+                "name": p.get("name"),
+                "description": p.get("description"),
+                "state": p.get("state"),
+                "progress": p.get("progress"),
+                "target_date": p.get("targetDate"),
+                "start_date": p.get("startDate"),
+                "url": p.get("url"),
+                "lead_name": lead.get("name") if lead else None,
+                "teams": [
+                    {"key": t.get("key"), "name": t.get("name")}
+                    for t in team_nodes
+                ],
+            })
+        return {"project_count": len(projects_out), "projects": projects_out}
+
+    async def _query_users_meta(
+        self, value: str, params: dict[str, str]
+    ) -> dict[str, Any]:
+        _ = value, params
+        users: list[dict[str, Any]] = await self.list_users()
+        return {"user_count": len(users), "users": users}
+
+    async def _query_team_states(
+        self, value: str, params: dict[str, str]
+    ) -> dict[str, Any]:
+        _ = params
+        team_key: str = value.strip()
+        if not team_key:
+            return {"error": "states: requires a team key (e.g. states:ENG)."}
+        team: dict[str, Any] | None = await self.resolve_team_by_key(team_key)
+        if not team:
+            return {"error": f"Team with key '{team_key}' not found."}
+        team_id: str = str(team["id"])
+        states: list[dict[str, Any]] = await self.list_workflow_states(team_id)
+        return {
+            "team_key": team.get("key"),
+            "team_name": team.get("name"),
+            "state_count": len(states),
+            "states": states,
+        }
 
     # ── Read: List Teams ─────────────────────────────────────────────────
 
