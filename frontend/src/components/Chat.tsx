@@ -36,6 +36,7 @@ import {
   useConnectedIntegrations,
   useIsOrgAdmin,
   useOrganization,
+  useUser,
   type AppBlock,
   type ChatMessage,
   type ConversationSummaryText,
@@ -381,11 +382,74 @@ export function Chat({
   const conversationThinking = conversationState?.isThinking ?? false;
   
   const orgInfo = useOrganization();
-  const configuredPrimaryModel: string | null = orgInfo?.llmPrimaryModel ?? null;
-  const activeModelName: string | null = conversationState?.activeModelName ?? configuredPrimaryModel;
+  const currentUser = useUser();
+  const setOrganization = useAppStore((s) => s.setOrganization);
+  const [freshPrimaryModel, setFreshPrimaryModel] = useState<string | null>(null);
+  const [hasLoadedFreshPrimaryModel, setHasLoadedFreshPrimaryModel] = useState<boolean>(false);
+  const organizationId: string | null = orgInfo?.id ?? null;
+  const storedPrimaryModel: string | null = orgInfo?.llmPrimaryModel ?? null;
+  const resolvedUserId: string | null = userId ?? currentUser?.id ?? null;
+
+  useEffect(() => {
+    if (!organizationId || !resolvedUserId) return;
+
+    let cancelled = false;
+    const loadFreshPrimaryModel = async (): Promise<void> => {
+      console.info('[Chat] Loading fresh primary model for composer label', {
+        organizationId,
+        userId: resolvedUserId,
+      });
+      try {
+        const { data, error } = await apiRequest<{ llm_primary_model?: string | null }>(
+          `/auth/organizations/${encodeURIComponent(organizationId)}?user_id=${encodeURIComponent(resolvedUserId)}`,
+          { cache: 'no-store' },
+        );
+        if (cancelled) return;
+        if (error) {
+          console.warn('[Chat] Failed to load fresh primary model for composer label', {
+            organizationId,
+            error,
+          });
+          return;
+        }
+        const nextPrimaryModel: string | null = data?.llm_primary_model ?? null;
+        setFreshPrimaryModel(nextPrimaryModel);
+        setHasLoadedFreshPrimaryModel(true);
+
+        if (orgInfo && storedPrimaryModel !== nextPrimaryModel) {
+          setOrganization({
+            ...orgInfo,
+            llmPrimaryModel: nextPrimaryModel,
+          });
+          console.info('[Chat] Updated organization model in store from fresh load', {
+            organizationId,
+            previousPrimaryModel: storedPrimaryModel,
+            nextPrimaryModel,
+          });
+        }
+      } catch (error) {
+        if (cancelled) return;
+        console.error('[Chat] Unexpected error loading fresh primary model for composer label', {
+          organizationId,
+          error,
+        });
+      }
+    };
+
+    void loadFreshPrimaryModel();
+    return () => {
+      cancelled = true;
+    };
+  }, [organizationId, resolvedUserId, orgInfo, storedPrimaryModel, setOrganization]);
+
+  const configuredPrimaryModel: string | null = storedPrimaryModel;
+  const displayPrimaryModel: string | null = hasLoadedFreshPrimaryModel
+    ? freshPrimaryModel
+    : configuredPrimaryModel;
+  const activeModelName: string | null = conversationState?.activeModelName ?? displayPrimaryModel;
   const activeModelLabel: string | null = conversationState?.activeModelName
     ? `Running: ${conversationState.activeModelName}`
-    : (configuredPrimaryModel ? `Default: ${configuredPrimaryModel}` : null);
+    : (displayPrimaryModel ? `Default: ${displayPrimaryModel}` : null);
 
   // Get actions from Zustand (stable references)
   const addConversationMessage = useAppStore((s) => s.addConversationMessage);
