@@ -6,6 +6,14 @@ import pytest
 from services.llm_adapter import OpenAIAdapter
 
 
+class _EmptyAsyncIterator:
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        raise StopAsyncIteration
+
+
 def test_openai_gpt5_uses_max_completion_tokens():
     adapter = OpenAIAdapter(api_key="test-key")
 
@@ -84,3 +92,27 @@ async def test_openai_token_kwarg_falls_back_for_legacy_model_when_needed():
     assert "max_completion_tokens" not in first_call_kwargs
     assert "max_completion_tokens" in second_call_kwargs
     assert "max_tokens" not in second_call_kwargs
+
+
+@pytest.mark.asyncio
+async def test_openai_stream_does_not_pass_duplicate_model_kwarg():
+    adapter = OpenAIAdapter(api_key="test-key")
+    create_mock = AsyncMock(return_value=_EmptyAsyncIterator())
+    adapter._client = SimpleNamespace(  # type: ignore[assignment]
+        chat=SimpleNamespace(completions=SimpleNamespace(create=create_mock))
+    )
+
+    events = [
+        event
+        async for event in adapter.stream(
+            model="gpt-4o-mini",
+            system="sys",
+            messages=[{"role": "user", "content": "hi"}],
+            max_tokens=42,
+        )
+    ]
+
+    assert events == []
+    assert create_mock.await_count == 1
+    call_kwargs = create_mock.await_args.kwargs
+    assert call_kwargs["model"] == "gpt-4o-mini"
