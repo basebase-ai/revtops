@@ -44,6 +44,14 @@ _SUMMARY_SYSTEM_PROMPT = (
 )
 
 _TITLE_MIN_WORDS = 20
+_GENERIC_TITLE_VALUES = {
+    "conversation",
+    "new chat",
+    "chat",
+    "untitled",
+    "untitled conversation",
+    "title",
+}
 
 _TITLE_SYSTEM_PROMPT = (
     "You name chat conversations for a sidebar list. Return ONLY a short title: "
@@ -130,6 +138,35 @@ def _sanitize_title(raw: str) -> str:
     if len(cleaned) > _TITLE_MAX_CHARS:
         cleaned = cleaned[: _TITLE_MAX_CHARS - 1].rstrip() + "…"
     return cleaned or "Conversation"
+
+
+def _is_generic_title(title: str) -> bool:
+    """Identify low-signal titles that should never overwrite a conversation."""
+    normalized = re.sub(r"\s+", " ", title.strip().lower())
+    return normalized in _GENERIC_TITLE_VALUES
+
+
+def _fallback_title_from_formatted_transcript(formatted: str) -> str | None:
+    """
+    Build a deterministic fallback title from the first user utterance.
+
+    Expected formatted shape:
+      USER: ...
+      ASSISTANT: ...
+    """
+    for line in formatted.splitlines():
+        if not line.startswith("USER:"):
+            continue
+        text = line[len("USER:"):].strip()
+        if not text:
+            continue
+        words = text.split()
+        fallback = " ".join(words[:8]).strip()
+        if len(fallback) > _TITLE_MAX_CHARS:
+            fallback = fallback[: _TITLE_MAX_CHARS - 1].rstrip() + "…"
+        if fallback and not _is_generic_title(fallback):
+            return fallback
+    return None
 
 
 async def generate_conversation_summary(
@@ -308,6 +345,20 @@ async def generate_conversation_title(
         title: str = _sanitize_title(raw)
         if not title:
             return None
+        if _is_generic_title(title):
+            fallback_title = _fallback_title_from_formatted_transcript(formatted)
+            if fallback_title:
+                logger.warning(
+                    "Title model returned generic title for conversation %s; using transcript fallback",
+                    conversation_id,
+                )
+                title = fallback_title
+            else:
+                logger.warning(
+                    "Title model returned generic title for conversation %s; skipping title update",
+                    conversation_id,
+                )
+                return None
 
         async with get_admin_session() as session:
             await session.execute(
