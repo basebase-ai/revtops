@@ -489,6 +489,7 @@ class OpenAIAdapter:
             return str(value)
 
         result: list[dict[str, Any]] = []
+        assistant_tool_call_ids: set[str] = set()
         for msg in messages:
             role: str = msg.get("role", "user")
             content: Any = msg.get("content", "")
@@ -502,11 +503,26 @@ class OpenAIAdapter:
                 if has_tool_results:
                     for block in content:
                         if isinstance(block, dict) and block.get("type") == "tool_result":
-                            result.append({
-                                "role": "tool",
-                                "tool_call_id": block.get("tool_use_id", ""),
-                                "content": _as_text(block.get("content", "")),
-                            })
+                            tool_use_id: str = _as_text(block.get("tool_use_id", ""))
+                            tool_content: str = _as_text(block.get("content", ""))
+                            if tool_use_id and tool_use_id in assistant_tool_call_ids:
+                                result.append({
+                                    "role": "tool",
+                                    "tool_call_id": tool_use_id,
+                                    "content": tool_content,
+                                })
+                            else:
+                                # OpenAI rejects `role=tool` messages unless there is a
+                                # preceding assistant message with a matching `tool_calls`.
+                                # Keep the information as user text when history is incomplete.
+                                logger.warning(
+                                    "Dropping orphaned tool_result for OpenAI message formatting",
+                                    extra={"tool_use_id": tool_use_id},
+                                )
+                                result.append({
+                                    "role": "user",
+                                    "content": f"[tool_result:{tool_use_id or 'unknown'}] {tool_content}",
+                                })
                     continue
 
                 # Image/text blocks — translate to OpenAI format
@@ -541,8 +557,11 @@ class OpenAIAdapter:
                     if btype == "text":
                         text_parts.append(_as_text(block.get("text", "")))
                     elif btype == "tool_use":
+                        tool_call_id: str = _as_text(block.get("id", ""))
+                        if tool_call_id:
+                            assistant_tool_call_ids.add(tool_call_id)
                         tool_calls.append({
-                            "id": block.get("id", ""),
+                            "id": tool_call_id,
                             "type": "function",
                             "function": {
                                 "name": block.get("name", ""),

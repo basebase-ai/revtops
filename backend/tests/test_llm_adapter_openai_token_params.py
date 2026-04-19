@@ -65,7 +65,26 @@ def test_openai_format_messages_coerces_tool_result_null_content_to_string():
         ]
     )
 
-    assert formatted == [{"role": "tool", "tool_call_id": "tool-1", "content": ""}]
+    assert formatted == [{"role": "user", "content": "[tool_result:tool-1] "}]
+
+
+def test_openai_format_messages_emits_tool_role_when_tool_use_exists():
+    adapter = OpenAIAdapter(api_key="test-key")
+
+    formatted = adapter.format_messages_for_api(
+        [
+            {
+                "role": "assistant",
+                "content": [{"type": "tool_use", "id": "tool-1", "name": "fn", "input": {}}],
+            },
+            {
+                "role": "user",
+                "content": [{"type": "tool_result", "tool_use_id": "tool-1", "content": None}],
+            },
+        ]
+    )
+
+    assert formatted[1] == {"role": "tool", "tool_call_id": "tool-1", "content": ""}
 
 
 @pytest.mark.asyncio
