@@ -91,9 +91,19 @@ async def resolve_llm_config(
         provider, PROVIDER_DEFAULT_MODELS["anthropic"]
     )
     if not primary_model:
-        primary_model = settings.DEFAULT_PRIMARY_MODEL or provider_defaults["primary"]
+        primary_model = _select_compatible_model(
+            requested_model=settings.DEFAULT_PRIMARY_MODEL,
+            provider=provider,
+            fallback_model=provider_defaults["primary"],
+            model_role="primary",
+        )
     if not cheap_model:
-        cheap_model = settings.DEFAULT_CHEAP_MODEL or provider_defaults["cheap"]
+        cheap_model = _select_compatible_model(
+            requested_model=settings.DEFAULT_CHEAP_MODEL,
+            provider=provider,
+            fallback_model=provider_defaults["cheap"],
+            model_role="cheap",
+        )
     if not workflow_model:
         workflow_model = primary_model
 
@@ -122,6 +132,58 @@ def _resolve_api_key(provider: LLMProvider, org_handle: str | None) -> str:
 
     logger.error("No API key found for provider %s (org_handle=%s)", provider, org_handle)
     return ""
+
+
+def _select_compatible_model(
+    *,
+    requested_model: str | None,
+    provider: LLMProvider,
+    fallback_model: str,
+    model_role: str,
+) -> str:
+    """Return a model compatible with provider, falling back when needed."""
+    if not requested_model:
+        return fallback_model
+
+    mapped_provider: str | None = provider_for_model(requested_model)
+    if mapped_provider and mapped_provider != provider:
+        logger.warning(
+            "Ignoring %s model '%s' for provider '%s' (belongs to '%s'); using '%s' instead",
+            model_role,
+            requested_model,
+            provider,
+            mapped_provider,
+            fallback_model,
+        )
+        return fallback_model
+
+    inferred_provider: str | None = _infer_provider_from_model_name(requested_model)
+    if inferred_provider and inferred_provider != provider:
+        logger.warning(
+            "Ignoring %s model '%s' for provider '%s' (inferred '%s'); using '%s' instead",
+            model_role,
+            requested_model,
+            provider,
+            inferred_provider,
+            fallback_model,
+        )
+        return fallback_model
+
+    return requested_model
+
+
+def _infer_provider_from_model_name(model: str) -> str | None:
+    """Infer provider for common model naming conventions."""
+    normalized: str = model.strip().lower()
+    if normalized.startswith("claude"):
+        return "anthropic"
+    if normalized.startswith(("gpt", "o1", "o3", "o4")):
+        return "openai"
+    if normalized.startswith("gemini"):
+        return "gemini"
+    if normalized.startswith("minimax"):
+        return "minimax"
+    return None
 
 
 async def get_org_adapter(
