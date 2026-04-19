@@ -390,31 +390,40 @@ class OpenAIAdapter:
         We optimistically use model-based selection first, then retry once with the
         alternate parameter only when the SDK raises an unexpected-kwarg TypeError.
         """
-        preferred_token_kwargs = self._build_token_limit_kwargs(
-            model=model,
-            max_tokens=max_tokens,
-        )
+        preferred_token_kwargs = self._build_token_limit_kwargs(model=model, max_tokens=max_tokens)
         preferred_token_param = next(iter(preferred_token_kwargs))
-        request_kwargs: dict[str, Any] = {
-            "model": model,
-            **api_kwargs,
-            **preferred_token_kwargs,
-        }
+        fallback_token_param = (
+            "max_tokens"
+            if preferred_token_param == "max_completion_tokens"
+            else "max_completion_tokens"
+        )
+
+        async def _attempt_completion(token_param_name: str) -> Any:
+            attempt_kwargs: dict[str, Any] = {
+                "model": model,
+                **api_kwargs,
+                token_param_name: max_tokens,
+            }
+            logger.debug(
+                "OpenAI chat completion attempt",
+                extra={
+                    "model": model,
+                    "token_param_name": token_param_name,
+                    "token_limit": max_tokens,
+                    "has_tools": bool(api_kwargs.get("tools")),
+                    "stream": bool(api_kwargs.get("stream")),
+                },
+            )
+            return await self._client.chat.completions.create(**attempt_kwargs)
 
         try:
-            return await self._client.chat.completions.create(**request_kwargs)
+            return await _attempt_completion(preferred_token_param)
         except TypeError as exc:
             if not self._is_unexpected_token_kwarg_error(
                 exc,
                 token_param_name=preferred_token_param,
             ):
                 raise
-
-            fallback_token_param = (
-                "max_tokens"
-                if preferred_token_param == "max_completion_tokens"
-                else "max_completion_tokens"
-            )
             logger.warning(
                 "OpenAI chat completion rejected token limit kwarg; retrying with fallback",
                 extra={
@@ -422,26 +431,15 @@ class OpenAIAdapter:
                     "rejected_token_param": preferred_token_param,
                     "fallback_token_param": fallback_token_param,
                     "token_limit": max_tokens,
+                    "error": str(exc),
                 },
             )
-            fallback_kwargs: dict[str, Any] = {
-                "model": model,
-                **api_kwargs,
-                fallback_token_param: max_tokens,
-            }
-            return await self._client.chat.completions.create(**fallback_kwargs)
         except OpenAIAPIStatusError as exc:
             if not self._is_unsupported_token_param_api_error(
                 exc,
                 token_param_name=preferred_token_param,
             ):
                 raise
-
-            fallback_token_param = (
-                "max_tokens"
-                if preferred_token_param == "max_completion_tokens"
-                else "max_completion_tokens"
-            )
             logger.warning(
                 "OpenAI API rejected token limit parameter; retrying with fallback",
                 extra={
@@ -450,14 +448,23 @@ class OpenAIAdapter:
                     "fallback_token_param": fallback_token_param,
                     "token_limit": max_tokens,
                     "status_code": exc.status_code,
+                    "error_body": exc.body,
                 },
             )
-            fallback_kwargs: dict[str, Any] = {
-                "model": model,
-                **api_kwargs,
-                fallback_token_param: max_tokens,
-            }
-            return await self._client.chat.completions.create(**fallback_kwargs)
+
+        try:
+            return await _attempt_completion(fallback_token_param)
+        except Exception:
+            logger.exception(
+                "OpenAI token limit fallback attempt failed",
+                extra={
+                    "model": model,
+                    "preferred_token_param": preferred_token_param,
+                    "fallback_token_param": fallback_token_param,
+                    "token_limit": max_tokens,
+                },
+            )
+            raise
 
     # -- streaming ----------------------------------------------------------
 
