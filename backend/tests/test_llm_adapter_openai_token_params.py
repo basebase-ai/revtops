@@ -68,6 +68,42 @@ def test_openai_format_messages_coerces_tool_result_null_content_to_string():
     assert formatted == [{"role": "tool", "tool_call_id": "tool-1", "content": ""}]
 
 
+def test_openai_format_messages_is_idempotent_for_openai_tool_sequence():
+    adapter = OpenAIAdapter(api_key="test-key")
+
+    formatted = adapter.format_messages_for_api(
+        [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_123",
+                        "type": "function",
+                        "function": {"name": "run_sql_query", "arguments": "{\"query\":\"select 1\"}"},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_123", "content": "{\"row_count\":1}"},
+        ]
+    )
+
+    assert formatted == [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_123",
+                    "type": "function",
+                    "function": {"name": "run_sql_query", "arguments": "{\"query\":\"select 1\"}"},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_123", "content": "{\"row_count\":1}"},
+    ]
+
+
 @pytest.mark.asyncio
 async def test_openai_stream_does_not_pass_duplicate_model_kwarg():
     adapter = OpenAIAdapter(api_key="test-key")

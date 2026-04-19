@@ -493,6 +493,43 @@ class OpenAIAdapter:
             role: str = msg.get("role", "user")
             content: Any = msg.get("content", "")
 
+            # Pass through already-openai tool messages without dropping tool_call_id.
+            if role == "tool":
+                result.append({
+                    "role": "tool",
+                    "tool_call_id": _as_text(msg.get("tool_call_id", "")),
+                    "content": _as_text(content),
+                })
+                continue
+
+            # Idempotency: preserve already-openai assistant tool_calls.
+            if role == "assistant" and isinstance(content, str) and msg.get("tool_calls"):
+                normalized_tool_calls: list[dict[str, Any]] = []
+                for tc in msg.get("tool_calls", []):
+                    if not isinstance(tc, dict):
+                        continue
+                    function = tc.get("function", {}) if isinstance(tc.get("function"), dict) else {}
+                    raw_arguments = function.get("arguments", "")
+                    arguments = (
+                        raw_arguments
+                        if isinstance(raw_arguments, str)
+                        else json.dumps(raw_arguments, ensure_ascii=False)
+                    )
+                    normalized_tool_calls.append({
+                        "id": _as_text(tc.get("id", "")),
+                        "type": "function",
+                        "function": {
+                            "name": _as_text(function.get("name", "")),
+                            "arguments": arguments,
+                        },
+                    })
+                result.append({
+                    "role": "assistant",
+                    "content": _as_text(content),
+                    "tool_calls": normalized_tool_calls,
+                })
+                continue
+
             if role == "user" and isinstance(content, list):
                 # Check for tool_result blocks (Anthropic format → OpenAI tool messages)
                 has_tool_results: bool = any(
