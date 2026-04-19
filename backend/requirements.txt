@@ -44,6 +44,9 @@ jsonschema==4.21.1
 weasyprint==68.0
 markdown==3.8.1
 
+# PDF text extraction (fallback for providers that lack native document blocks)
+pymupdf==1.25.3
+
 # Excel parsing (for chat file attachments)
 openpyxl==3.1.2
 

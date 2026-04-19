@@ -308,6 +308,34 @@ def _pdf_block(sf: StoredFile) -> dict[str, Any]:
     }
 
 
+def pdf_to_text_block(sf: StoredFile) -> dict[str, Any]:
+    """Extract PDF text via pymupdf — used as a fallback when the provider
+    doesn't support native ``document`` content blocks."""
+    try:
+        import pymupdf  # noqa: F811
+
+        doc: pymupdf.Document = pymupdf.open(stream=sf.data, filetype="pdf")
+        pages: list[str] = []
+        for page_num in range(len(doc)):
+            page_text: str = doc[page_num].get_text()
+            if page_text.strip():
+                pages.append(f"--- Page {page_num + 1} ---\n{page_text}")
+        doc.close()
+        text: str = "\n\n".join(pages) if pages else "[PDF contained no extractable text]"
+    except Exception as exc:
+        logger.warning("PDF text extraction failed for %s: %s", sf.filename, exc)
+        text = f"[Attached PDF '{sf.filename}' could not be extracted — {exc}]"
+
+    max_chars: int = 200_000
+    if len(text) > max_chars:
+        text = text[:max_chars] + f"\n\n[Truncated — showing first {max_chars:,} characters of {len(text):,} total]"
+
+    return {
+        "type": "text",
+        "text": f"Contents of {sf.filename}:\n\n{text}",
+    }
+
+
 def _xlsx_to_text_block(sf: StoredFile) -> dict[str, Any]:
     """Parse XLSX to CSV text using openpyxl."""
     try:
