@@ -386,28 +386,28 @@ export function Chat({
   const setOrganization = useAppStore((s) => s.setOrganization);
   const [freshPrimaryModel, setFreshPrimaryModel] = useState<string | null>(null);
   const [hasLoadedFreshPrimaryModel, setHasLoadedFreshPrimaryModel] = useState<boolean>(false);
-  const organizationId: string | null = orgInfo?.id ?? null;
+  const resolvedOrganizationId: string | null = orgInfo?.id ?? organizationId ?? null;
   const storedPrimaryModel: string | null = orgInfo?.llmPrimaryModel ?? null;
   const resolvedUserId: string | null = userId ?? currentUser?.id ?? null;
 
   useEffect(() => {
-    if (!organizationId || !resolvedUserId) return;
+    if (!resolvedOrganizationId || !resolvedUserId) return;
 
     let cancelled = false;
     const loadFreshPrimaryModel = async (): Promise<void> => {
       console.info('[Chat] Loading fresh primary model for composer label', {
-        organizationId,
+        organizationId: resolvedOrganizationId,
         userId: resolvedUserId,
       });
       try {
         const { data, error } = await apiRequest<{ llm_primary_model?: string | null }>(
-          `/auth/organizations/${encodeURIComponent(organizationId)}?user_id=${encodeURIComponent(resolvedUserId)}`,
+          `/auth/organizations/${encodeURIComponent(resolvedOrganizationId)}?user_id=${encodeURIComponent(resolvedUserId)}`,
           { cache: 'no-store' },
         );
         if (cancelled) return;
         if (error) {
           console.warn('[Chat] Failed to load fresh primary model for composer label', {
-            organizationId,
+            organizationId: resolvedOrganizationId,
             error,
           });
           return;
@@ -422,7 +422,7 @@ export function Chat({
             llmPrimaryModel: nextPrimaryModel,
           });
           console.info('[Chat] Updated organization model in store from fresh load', {
-            organizationId,
+            organizationId: resolvedOrganizationId,
             previousPrimaryModel: storedPrimaryModel,
             nextPrimaryModel,
           });
@@ -430,7 +430,7 @@ export function Chat({
       } catch (error) {
         if (cancelled) return;
         console.error('[Chat] Unexpected error loading fresh primary model for composer label', {
-          organizationId,
+          organizationId: resolvedOrganizationId,
           error,
         });
       }
@@ -440,7 +440,7 @@ export function Chat({
     return () => {
       cancelled = true;
     };
-  }, [organizationId, resolvedUserId, orgInfo, storedPrimaryModel, setOrganization]);
+  }, [resolvedOrganizationId, resolvedUserId, orgInfo, storedPrimaryModel, setOrganization]);
 
   const configuredPrimaryModel: string | null = storedPrimaryModel;
   const displayPrimaryModel: string | null = hasLoadedFreshPrimaryModel
