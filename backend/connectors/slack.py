@@ -23,6 +23,8 @@ from sqlalchemy import func, select
 _SEPARATOR_ROW_RE: re.Pattern[str] = re.compile(
     r'^\|?[\s\-:|]+\|?$'
 )
+_MARKDOWN_TABLE_CODE_BLOCK_TEMPLATE: str = "```\n{table}\n```"
+_markdown_logger = logging.getLogger(__name__)
 
 
 def _clean_table_lines(raw: str) -> str:
@@ -43,8 +45,8 @@ def markdown_to_mrkdwn(text: str) -> tuple[str, Optional[list[dict[str, Any]]]]:
     """
     from connectors.slack_tables import format_markdown_table_inline
 
-    # Placeholder content: plain string, or (blocks|None, fallback_text) for tables
-    code_blocks: list[str | tuple[Optional[list[dict[str, Any]]], str]] = []
+    # Placeholder content: plain string, or table metadata for later rendering.
+    code_blocks: list[str | dict[str, Any]] = []
     _FENCE_RE: re.Pattern[str] = re.compile(r'```\w*\n(.*?)```', re.DOTALL)
 
     def _extract_fence(match: re.Match[str]) -> str:
@@ -52,7 +54,12 @@ def markdown_to_mrkdwn(text: str) -> tuple[str, Optional[list[dict[str, Any]]]]:
         idx: int = len(code_blocks)
         if '|' in content:
             table_blocks, fallback = format_markdown_table_inline(content)
-            code_blocks.append((table_blocks, fallback))
+            code_blocks.append({
+                "type": "table",
+                "table_blocks": table_blocks,
+                "fallback": fallback,
+                "raw_table": content.strip(),
+            })
         else:
             code_blocks.append('```\n' + content.strip() + '\n```')
         return f'\x00CB{idx}\x00'
@@ -69,7 +76,12 @@ def markdown_to_mrkdwn(text: str) -> tuple[str, Optional[list[dict[str, Any]]]]:
         cleaned: str = _clean_table_lines(match.group(1))
         table_blocks, fallback = format_markdown_table_inline(cleaned)
         idx = len(code_blocks)
-        code_blocks.append((table_blocks, fallback))
+        code_blocks.append({
+            "type": "table",
+            "table_blocks": table_blocks,
+            "fallback": fallback,
+            "raw_table": cleaned.strip(),
+        })
         return f'\x00CB{idx}\x00'
 
     text = _TABLE_RE.sub(_wrap_table, text)
@@ -79,14 +91,36 @@ def markdown_to_mrkdwn(text: str) -> tuple[str, Optional[list[dict[str, Any]]]]:
     text = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', r'<\2|\1>', text)
     text = re.sub(r'^#{1,6}\s+(.+)$', r'*\1*', text, flags=re.MULTILINE)
 
-    # -- Step 4: restore placeholders and collect first table blocks ---------
+    # -- Step 4: restore placeholders and decide whether to use table blocks --
+    table_block_count: int = 0
+    for block in code_blocks:
+        if isinstance(block, dict) and block.get("type") == "table" and block.get("table_blocks") is not None:
+            table_block_count += 1
+
+    use_table_blocks: bool = table_block_count == 1
+    if table_block_count > 1:
+        _markdown_logger.info(
+            "[SlackConnector] Detected %d markdown tables with block representation; "
+            "falling back to inline code blocks so all tables render in one Slack message.",
+            table_block_count,
+        )
+
     out_blocks: Optional[list[dict[str, Any]]] = None
     for i, block in enumerate(code_blocks):
-        if isinstance(block, tuple):
-            table_blocks, fallback = block
-            text = text.replace(f'\x00CB{i}\x00', fallback)
-            if out_blocks is None and table_blocks is not None:
+        if isinstance(block, dict) and block.get("type") == "table":
+            table_blocks = block.get("table_blocks")
+            fallback = str(block.get("fallback") or "")
+            raw_table = str(block.get("raw_table") or "").strip()
+
+            if use_table_blocks and table_blocks is not None and out_blocks is None:
+                text = text.replace(f'\x00CB{i}\x00', fallback)
                 out_blocks = table_blocks
+            else:
+                code_fallback: str = (
+                    _MARKDOWN_TABLE_CODE_BLOCK_TEMPLATE.format(table=raw_table)
+                    if raw_table else fallback
+                )
+                text = text.replace(f'\x00CB{i}\x00', code_fallback)
         else:
             assert isinstance(block, str)
             text = text.replace(f'\x00CB{i}\x00', block)
