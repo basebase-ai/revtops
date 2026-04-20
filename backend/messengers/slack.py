@@ -34,11 +34,58 @@ _SLACK_CONTEXT_SUMMARY_MESSAGE_CHAR_LIMIT: int = 220
 _SLACK_CONTEXT_SUMMARY_RECENT_ITEMS: int = 80
 _SLACK_CONTEXT_SUMMARY_TOP_THREADS: int = 10
 _SLACK_CONTEXT_SNAPSHOT_SEPARATOR: str = "\n\n---\n\n"
+_SLACK_FENCE_RE: re.Pattern[str] = re.compile(r"```[\w-]*\n.*?```", re.DOTALL)
+_SLACK_TABLE_RE: re.Pattern[str] = re.compile(
+    r"((?:^(?:\|.+\||[^\n|]+(?:\|[^\n|]+){2,})$\n?)+)",
+    re.MULTILINE,
+)
 
 
 def _normalize_slack_dedupe_text(text: str) -> str:
     """Normalize Slack message text for duplicate detection."""
     return re.sub(r"\s+", "", text or "")
+
+
+def _split_markdown_for_slack_tables(markdown: str) -> list[str]:
+    """Split markdown into chunks so each chunk includes at most one table block."""
+    spans: list[tuple[int, int]] = []
+
+    for fence_match in _SLACK_FENCE_RE.finditer(markdown):
+        fenced_block: str = fence_match.group(0)
+        if "|" in fenced_block:
+            spans.append((fence_match.start(), fence_match.end()))
+
+    def _is_overlapping(start: int, end: int) -> bool:
+        return any(not (end <= span_start or start >= span_end) for span_start, span_end in spans)
+
+    for table_match in _SLACK_TABLE_RE.finditer(markdown):
+        start = table_match.start()
+        end = table_match.end()
+        if _is_overlapping(start, end):
+            continue
+        spans.append((start, end))
+
+    if len(spans) <= 1:
+        return [markdown]
+
+    spans.sort(key=lambda span: span[0])
+    chunks: list[str] = []
+    cursor: int = 0
+
+    for start, end in spans:
+        prefix: str = markdown[cursor:start].strip()
+        if prefix:
+            chunks.append(prefix)
+        table_chunk: str = markdown[start:end].strip()
+        if table_chunk:
+            chunks.append(table_chunk)
+        cursor = end
+
+    suffix: str = markdown[cursor:].strip()
+    if suffix:
+        chunks.append(suffix)
+
+    return chunks or [markdown]
 
 
 class SlackMessenger(WorkspaceMessenger):
@@ -952,18 +999,26 @@ class SlackMessenger(WorkspaceMessenger):
         workspace_id: str | None = None,
         organization_id: str | None = None,
     ) -> None:
-        """Format with markdown_to_mrkdwn and post; use blocks when table is present."""
-        text: str
-        blocks: list[dict[str, Any]] | None
-        text, blocks = markdown_to_mrkdwn(text_to_send)
-        await self.post_message(
-            channel_id=channel_id,
-            text=text,
-            thread_id=thread_id,
-            workspace_id=workspace_id,
-            organization_id=organization_id,
-            blocks=blocks,
-        )
+        """Format markdown for Slack and split messages so each has at most one table."""
+        chunks: list[str] = _split_markdown_for_slack_tables(text_to_send)
+        if len(chunks) > 1:
+            logger.info(
+                "[slack] Splitting outbound markdown into %d Slack messages to keep one table per message",
+                len(chunks),
+            )
+
+        for chunk in chunks:
+            text: str
+            blocks: list[dict[str, Any]] | None
+            text, blocks = markdown_to_mrkdwn(chunk)
+            await self.post_message(
+                channel_id=channel_id,
+                text=text,
+                thread_id=thread_id,
+                workspace_id=workspace_id,
+                organization_id=organization_id,
+                blocks=blocks,
+            )
 
     # ------------------------------------------------------------------
     # Typing indicators (reactions)
