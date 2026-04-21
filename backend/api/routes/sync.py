@@ -1206,6 +1206,7 @@ async def list_github_repos(
             .where(
                 Integration.organization_id == UUID(organization_id),
                 Integration.connector == "github",
+                Integration.user_id == auth.user_id,
                 Integration.is_active == True,
             )
             .limit(1)
@@ -1216,7 +1217,10 @@ async def list_github_repos(
             )
 
     try:
-        connector: GitHubConnector = GitHubConnector(organization_id)
+        connector: GitHubConnector = GitHubConnector(
+            organization_id,
+            user_id=auth.user_id_str,
+        )
         repos: list[dict[str, Any]] = await connector.list_available_repos()
         return GitHubAvailableReposResponse(
             repos=[GitHubRepoResponse(**r) for r in repos]
@@ -1247,7 +1251,10 @@ async def track_github_repos(
     if not body.github_repo_ids:
         raise HTTPException(status_code=400, detail="No repo IDs provided")
 
-    connector: GitHubConnector = GitHubConnector(organization_id)
+    connector: GitHubConnector = GitHubConnector(
+        organization_id,
+        user_id=auth.user_id_str,
+    )
     tracked: list[dict[str, Any]] = await connector.track_repos(body.github_repo_ids)
     return GitHubTrackedReposResponse(
         repos=[GitHubTrackedRepoResponse(**r) for r in tracked]
@@ -1267,7 +1274,10 @@ async def untrack_github_repos(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid organization ID")
 
-    connector: GitHubConnector = GitHubConnector(organization_id)
+    connector: GitHubConnector = GitHubConnector(
+        organization_id,
+        user_id=auth.user_id_str,
+    )
     await connector.untrack_repos(body.github_repo_ids)
     return {"status": "ok"}
 
