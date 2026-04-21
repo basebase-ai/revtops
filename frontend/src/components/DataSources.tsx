@@ -448,6 +448,7 @@ export function DataSources(): JSX.Element {
   const [githubSelectedIds, setGithubSelectedIds] = useState<Set<number>>(new Set());
   const [githubSaving, setGithubSaving] = useState(false);
   const [githubReposExpanded, setGithubReposExpanded] = useState(false);
+  const [githubRequiresRepoReview, setGithubRequiresRepoReview] = useState(false);
   
   // Live sync progress from WebSocket
   const [syncProgress, setSyncProgress] = useState<Record<string, number>>({});
@@ -670,6 +671,13 @@ export function DataSources(): JSX.Element {
     }
   }, [githubConnected, organizationId, fetchGitHubAvailableRepos, fetchGitHubTrackedRepos]);
 
+  useEffect(() => {
+    if (!githubConnected) {
+      setGithubRequiresRepoReview(false);
+      setGithubReposExpanded(false);
+    }
+  }, [githubConnected]);
+
   const handleGitHubTrackRepos = useCallback(async (): Promise<void> => {
     if (!organizationId || githubSaving) return;
     setGithubSaving(true);
@@ -688,6 +696,7 @@ export function DataSources(): JSX.Element {
       await fetchGitHubTrackedRepos();
       void fetchIntegrations();
       setGithubReposExpanded(false);
+      setGithubRequiresRepoReview(false);
     } catch (e) {
       setGithubReposError(e instanceof Error ? e.message : 'Failed to save');
     } finally {
@@ -883,6 +892,10 @@ export function DataSources(): JSX.Element {
 
               if (provider === "slack") {
                 setIdentityMappingProvider("slack");
+              }
+              if (provider === 'github') {
+                setGithubReposExpanded(true);
+                setGithubRequiresRepoReview(true);
               }
             } catch (confirmError) {
               console.error('Error confirming integration:', confirmError);
@@ -1119,6 +1132,12 @@ export function DataSources(): JSX.Element {
 
   const handleSync = async (provider: string, sinceIso?: string): Promise<void> => {
     if (syncingProviders.has(provider) || !organizationId) return;
+    if (provider === 'github' && githubRequiresRepoReview) {
+      setGithubReposExpanded(true);
+      setSyncError('Select and save GitHub repositories before syncing.');
+      setTimeout(() => setSyncError(null), 8000);
+      return;
+    }
 
     setSyncError(null);
     setSyncingProviders((prev) => new Set(prev).add(provider));
@@ -1204,6 +1223,12 @@ export function DataSources(): JSX.Element {
 
   const handleSyncAll = useCallback(async (): Promise<void> => {
     if (!organizationId || !canSyncAllConnectors || syncingAll) return;
+    if (githubRequiresRepoReview) {
+      setGithubReposExpanded(true);
+      setSyncError('Review and save your GitHub repository selection before running Sync All.');
+      setTimeout(() => setSyncError(null), 8000);
+      return;
+    }
 
     setSyncError(null);
     setSyncingAll(true);
@@ -1279,6 +1304,7 @@ export function DataSources(): JSX.Element {
     organizationId,
     canSyncAllConnectors,
     syncingAll,
+    githubRequiresRepoReview,
     fetchIntegrations,
     getConnectorDisplay,
   ]);
