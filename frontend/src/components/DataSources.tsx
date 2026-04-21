@@ -10,7 +10,7 @@
  * Uses React Query for server state (integrations list).
  */
 
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import Nango from '@nangohq/frontend';
 import { HiGlobeAlt, HiUserGroup, HiX, HiCog, HiShare, HiLockClosed, HiChevronDown, HiLightningBolt, HiLink } from 'react-icons/hi';
 import { API_BASE, apiRequest, getAuthenticatedRequestHeaders } from '../lib/api';
@@ -450,6 +450,8 @@ export function DataSources(): JSX.Element {
   const [githubSaving, setGithubSaving] = useState(false);
   const [githubReposExpanded, setGithubReposExpanded] = useState(false);
   const [githubRequiresRepoReview, setGithubRequiresRepoReview] = useState(false);
+  const [githubAutoScrollPending, setGithubAutoScrollPending] = useState(false);
+  const connectorCardRefs = useRef<Record<string, HTMLDivElement | null>>({});
   
   // Live sync progress from WebSocket
   const [syncProgress, setSyncProgress] = useState<Record<string, number>>({});
@@ -532,6 +534,9 @@ export function DataSources(): JSX.Element {
 
   const githubIntegration = rawIntegrations.find((integration) => integration.provider === 'github');
   const githubConnected = Boolean(githubIntegration?.isActive);
+  const githubCurrentUserConnected = rawIntegrations.some(
+    (integration) => integration.provider === 'github' && integration.isActive && integration.currentUserConnected,
+  );
   
   // Handle WebSocket messages for sync progress
   const handleWsMessage = useCallback((message: string) => {
@@ -666,11 +671,11 @@ export function DataSources(): JSX.Element {
   }, [organizationId]);
 
   useEffect(() => {
-    if (githubConnected && organizationId) {
+    if (githubCurrentUserConnected && organizationId) {
       void fetchGitHubAvailableRepos();
       void fetchGitHubTrackedRepos();
     }
-  }, [githubConnected, organizationId, fetchGitHubAvailableRepos, fetchGitHubTrackedRepos]);
+  }, [githubCurrentUserConnected, organizationId, fetchGitHubAvailableRepos, fetchGitHubTrackedRepos]);
 
   useEffect(() => {
     if (!githubConnected) {
@@ -770,6 +775,14 @@ export function DataSources(): JSX.Element {
     };
   });
   const allIntegrations: DisplayIntegration[] = [...integrations, ...availableIntegrationsDisplay];
+
+  useEffect(() => {
+    if (!githubAutoScrollPending || !githubReposExpanded) return;
+    const githubCard = connectorCardRefs.current.github;
+    if (!githubCard) return;
+    githubCard.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    setGithubAutoScrollPending(false);
+  }, [allIntegrations.length, githubAutoScrollPending, githubReposExpanded]);
 
   // Full list of all connectors for the Add Source modal (from API or fallback)
   const allConnectorsForModal: DisplayIntegration[] = connectorSlugs.map((provider: string): DisplayIntegration => {
@@ -897,6 +910,7 @@ export function DataSources(): JSX.Element {
               if (provider === 'github') {
                 setGithubReposExpanded(true);
                 setGithubRequiresRepoReview(true);
+                setGithubAutoScrollPending(true);
               }
             } catch (confirmError) {
               console.error('Error confirming integration:', confirmError);
@@ -1721,7 +1735,13 @@ export function DataSources(): JSX.Element {
     };
 
     return (
-      <div key={integration.id} className={cardClass}>
+      <div
+        key={integration.id}
+        className={cardClass}
+        ref={(el) => {
+          connectorCardRefs.current[integration.provider] = el;
+        }}
+      >
         <div className="flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-4">
           {/* Icon and name row on mobile */}
           <div className="flex items-center gap-3 sm:gap-4">
