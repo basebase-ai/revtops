@@ -8,6 +8,8 @@ def test_infer_provider_from_model_name() -> None:
     assert _infer_provider_from_model_name("gpt-5-mini") == "openai"
     assert _infer_provider_from_model_name("gemini-2.5-flash") == "gemini"
     assert _infer_provider_from_model_name("MiniMax-M2.7-highspeed") == "minimax"
+    assert _infer_provider_from_model_name("qwen3-max") == "qwen"
+    assert _infer_provider_from_model_name("qwq-plus") == "qwen"
     assert _infer_provider_from_model_name("some-unknown-model") is None
 
 
