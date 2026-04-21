@@ -326,3 +326,63 @@ def test_create_returns_org_handle_scoped_uri_when_handle_present(monkeypatch):
 
     assert result["status"] == "success"
     assert result["uri"].startswith("/acme/apps/")
+
+
+def test_read_materializes_fields_before_session_exit(monkeypatch):
+    org_id = "00000000-0000-0000-0000-000000000010"
+    app_id = "00000000-0000-0000-0000-000000000099"
+
+    class _DetachedAwareApp:
+        def __init__(self) -> None:
+            self.detached = False
+
+        @property
+        def title(self):
+            if self.detached:
+                raise RuntimeError("detached")
+            return "Test App"
+
+        @property
+        def description(self):
+            if self.detached:
+                raise RuntimeError("detached")
+            return "desc"
+
+        @property
+        def queries(self):
+            if self.detached:
+                raise RuntimeError("detached")
+            return {"q1": {"sql": "SELECT 1 AS one", "params": {}}}
+
+        @property
+        def frontend_code(self):
+            if self.detached:
+                raise RuntimeError("detached")
+            return "export default function App(){ return <div/>; }"
+
+    class _ReadSession:
+        def __init__(self, app):
+            self.app = app
+
+        async def execute(self, _query, _params=None):
+            return _FakeExecuteResult(self.app)
+
+    app = _DetachedAwareApp()
+    fake_session = _ReadSession(app)
+
+    @asynccontextmanager
+    async def _fake_get_session(*_args, **_kwargs):
+        try:
+            yield fake_session
+        finally:
+            app.detached = True
+
+    monkeypatch.setattr("connectors.apps.get_session", _fake_get_session)
+
+    connector = AppsConnector(organization_id=org_id, user_id=None)
+    result = asyncio.run(connector._read(app_id))
+
+    assert result["status"] == "success"
+    assert result["app_id"] == app_id
+    assert result["title"] == "Test App"
+    assert "sql_with_lines" in result["queries"]["q1"]

@@ -279,12 +279,25 @@ class AppsConnector(BaseConnector):
                 )
             )
             app: App | None = result.scalar_one_or_none()
+            if not app:
+                return {"error": f"App not found: {app_id}"}
 
-        if not app:
-            return {"error": f"App not found: {app_id}"}
+            # Materialize all needed fields while the instance is still bound
+            # to the active SQLAlchemy session. This avoids DetachedInstanceError
+            # when attribute refresh is attempted after context exit.
+            title: str = app.title
+            description: str | None = app.description
+            queries: dict[str, Any] = dict(app.queries or {})
+            frontend_code: str = app.frontend_code
+
+        logger.debug(
+            "[AppsConnector] Read app payload materialized inside session: app_id=%s query_count=%d",
+            app_id,
+            len(queries),
+        )
 
         queries_with_line_numbers: dict[str, Any] = {}
-        for qname, qspec in app.queries.items():
+        for qname, qspec in queries.items():
             queries_with_line_numbers[qname] = {
                 **qspec,
                 "sql_with_lines": self._add_line_numbers(qspec.get("sql", "")),
@@ -293,11 +306,11 @@ class AppsConnector(BaseConnector):
         return {
             "status": "success",
             "app_id": app_id,
-            "title": app.title,
-            "description": app.description,
+            "title": title,
+            "description": description,
             "queries": queries_with_line_numbers,
-            "frontend_code": app.frontend_code,
-            "frontend_code_with_lines": self._add_line_numbers(app.frontend_code),
+            "frontend_code": frontend_code,
+            "frontend_code_with_lines": self._add_line_numbers(frontend_code),
         }
 
     async def _resolve_user_from_external_actor(
