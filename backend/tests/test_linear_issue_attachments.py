@@ -3,8 +3,10 @@ from __future__ import annotations
 
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
+from uuid import UUID
 
 import pytest
+from sqlalchemy.sql import Select
 
 from connectors.linear import (
     LinearConnector,
@@ -22,6 +24,56 @@ def test_normalize_uuid_string_list() -> None:
     assert _normalize_uuid_string_list("  x  ") == ["x"]
     assert _normalize_uuid_string_list([" a ", "b"]) == ["a", "b"]
     assert _normalize_uuid_string_list({}) == []
+
+
+@pytest.mark.asyncio
+async def test_load_chat_attachments_queries_scalar_columns_and_preserves_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    Regression test for SQLAlchemy bhk3 detached-instance failures.
+
+    We assert the loader uses scalar column selection (not ORM entity instances),
+    and that output ordering follows `attachment_ids`.
+    """
+    connector = LinearConnector(organization_id="00000000-0000-0000-0000-000000000001")
+    aid_1: str = "11111111-1111-1111-1111-111111111111"
+    aid_2: str = "22222222-2222-2222-2222-222222222222"
+    conv: str = "33333333-3333-3333-3333-333333333333"
+    captured_stmt: Select | None = None
+
+    class _FakeResult:
+        def all(self) -> list[tuple[Any, ...]]:
+            # Return rows in DB order opposite from request order to verify reordering.
+            return [
+                (UUID(aid_2), "b.png", "image/png", b"b"),
+                (UUID(aid_1), "a.txt", "text/plain", b"a"),
+            ]
+
+    class _FakeSession:
+        async def execute(self, stmt: Select) -> _FakeResult:
+            nonlocal captured_stmt
+            captured_stmt = stmt
+            return _FakeResult()
+
+    class _FakeCM:
+        async def __aenter__(self) -> _FakeSession:
+            return _FakeSession()
+
+        async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+            return None
+
+    monkeypatch.setattr("connectors.linear.get_session", lambda **_: _FakeCM())
+
+    loaded = await connector._load_chat_attachments_for_issue(
+        conversation_id=conv,
+        attachment_ids=[aid_1, aid_2],
+    )
+
+    assert loaded == [("a.txt", "text/plain", b"a"), ("b.png", "image/png", b"b")]
+    assert captured_stmt is not None
+    selected_cols = [col.key for col in captured_stmt.selected_columns]
+    assert selected_cols == ["id", "filename", "mime_type", "content"]
 
 
 @pytest.mark.asyncio
