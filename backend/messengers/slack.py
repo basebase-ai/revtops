@@ -496,15 +496,15 @@ class SlackMessenger(WorkspaceMessenger):
         if len(text_compact) > _SLACK_CONTEXT_MESSAGE_CHAR_LIMIT:
             text_compact = f"{text_compact[:_SLACK_CONTEXT_MESSAGE_CHAR_LIMIT]}…"
 
-        file_names: list[str] = []
+        file_references: list[str] = []
         for file_data in files:
-            file_name: str = str(file_data.get("name") or "").strip()
-            if file_name:
-                file_names.append(file_name)
-        if file_names:
-            file_suffix: str = ", ".join(file_names[:3])
-            if len(file_names) > 3:
-                file_suffix = f"{file_suffix}, +{len(file_names) - 3} more"
+            file_reference: str | None = self._format_slack_file_reference(file_data)
+            if file_reference:
+                file_references.append(file_reference)
+        if file_references:
+            file_suffix: str = "; ".join(file_references[:3])
+            if len(file_references) > 3:
+                file_suffix = f"{file_suffix}; +{len(file_references) - 3} more"
             text_compact = f"{text_compact} [files: {file_suffix}]".strip()
 
         ts_value: str = str(slack_message.get("ts") or "").strip()
@@ -515,6 +515,35 @@ class SlackMessenger(WorkspaceMessenger):
             pass
         user_label: str = str(slack_message.get("user") or slack_message.get("bot_id") or "unknown")
         return f"[{ts_display}] {user_label}: {text_compact}"
+
+    def _format_slack_file_reference(self, file_data: dict[str, Any]) -> str | None:
+        """Render a compact Slack file reference so downstream tools can fetch content."""
+        file_name: str = str(file_data.get("name") or file_data.get("title") or "").strip()
+        file_id: str = str(file_data.get("id") or "").strip()
+        if not file_name and not file_id:
+            return None
+
+        # Prefer auth-gated download URL so agents can retrieve bytes via Slack connector.
+        file_url: str = str(
+            file_data.get("url_private_download")
+            or file_data.get("url_private")
+            or file_data.get("permalink")
+            or ""
+        ).strip()
+        mime_type: str = str(file_data.get("mimetype") or "").strip()
+
+        reference_parts: list[str] = []
+        if file_id:
+            reference_parts.append(f"id={file_id}")
+        if file_url:
+            reference_parts.append(f"url={file_url}")
+        if mime_type:
+            reference_parts.append(f"mimetype={mime_type}")
+        reference_payload: str = ", ".join(reference_parts)
+
+        if reference_payload:
+            return f"{file_name or 'unnamed-file'} <slack_file_ref {reference_payload}>"
+        return file_name or "unnamed-file"
 
     def _summarize_channel_history_if_needed(
         self,

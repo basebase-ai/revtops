@@ -690,3 +690,27 @@ def test_format_channel_history_context_inserts_thread_messages_at_thread_start(
     latest_non_thread_idx = rendered.index("latest non-thread message")
 
     assert starter_idx < reply_one_idx < reply_two_idx < middle_non_thread_idx < latest_non_thread_idx
+
+
+def test_format_single_slack_context_line_includes_file_references():
+    messenger = SlackMessenger()
+    line = messenger._format_single_slack_context_line(
+        {
+            "ts": "1710711602.000",
+            "user": "U3",
+            "text": "Please review this",
+            "files": [
+                {
+                    "id": "F123",
+                    "name": "q1-report.pdf",
+                    "url_private_download": "https://files.slack.com/files-pri/T1-F123/download/q1-report.pdf",
+                    "mimetype": "application/pdf",
+                }
+            ],
+        }
+    )
+
+    assert line is not None
+    assert "q1-report.pdf" in line
+    assert "<slack_file_ref id=F123" in line
+    assert "url=https://files.slack.com/files-pri/T1-F123/download/q1-report.pdf" in line
