@@ -3183,6 +3183,21 @@ async def confirm_integration(
             user_uuid,
             connection_metadata,
         )
+    if request.provider == "github":
+        async def _map_connected_github_identity() -> None:
+            try:
+                from connectors.github import GitHubConnector
+
+                connector = GitHubConnector(str(org_uuid))
+                await connector.map_connected_user_identity(user_uuid)
+            except Exception:
+                logger.exception(
+                    "Failed to auto-map connected GitHub identity org=%s user_id=%s",
+                    org_uuid,
+                    user_uuid,
+                )
+
+        background_tasks.add_task(_map_connected_github_identity)
 
     return {
         "status": "connected",

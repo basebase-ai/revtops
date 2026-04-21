@@ -746,13 +746,19 @@ Use `run_sql_query` on `github_repositories`, `github_commits`, `github_pull_req
 
     async def list_available_repos(self) -> list[dict[str, Any]]:
         """
-        List all repos accessible to the authenticated GitHub token.
+        List repos the connected GitHub user can directly access.
 
         The frontend uses this to let teams choose which repos to track.
         Returns a lightweight list (no commits/PRs fetched yet).
         """
         raw_repos: list[dict[str, Any]] = await self._gh_get_paginated(
-            "/user/repos", params={"sort": "updated", "direction": "desc"}
+            "/user/repos",
+            params={
+                "sort": "updated",
+                "direction": "desc",
+                # Exclude indirect org-member visibility and keep user-owned/collaborator repos.
+                "affiliation": "owner,collaborator",
+            },
         )
         repos: list[dict[str, Any]] = [
             {
@@ -769,6 +775,51 @@ Use `run_sql_query` on `github_repositories`, `github_commits`, `github_pull_req
             for r in raw_repos
         ]
         return repos
+
+    async def map_connected_user_identity(self, user_id: UUID) -> None:
+        """
+        Ensure the connected GitHub account login is mapped to ``user_id``.
+
+        This runs right after OAuth connect so the connection owner is always
+        linked to their own GitHub identity without requiring the mapping wizard.
+        """
+        logger.info(
+            "Ensuring GitHub self identity mapping org=%s user_id=%s",
+            self.organization_id,
+            user_id,
+        )
+        profile: dict[str, Any] = await self._gh_get("/user")
+        github_login_raw: Any = profile.get("login")
+        github_login: str = str(github_login_raw or "").strip()
+        if not github_login:
+            logger.warning(
+                "Skipping GitHub self mapping because /user login was missing org=%s user_id=%s",
+                self.organization_id,
+                user_id,
+            )
+            return
+
+        github_email_raw: Any = profile.get("email")
+        github_email: str | None = str(github_email_raw).strip() if github_email_raw else None
+
+        async with get_session(organization_id=self.organization_id) as session:
+            await self._ensure_github_identity_mapping(
+                session,
+                github_login=github_login,
+                github_email=github_email,
+                user_id=user_id,
+                revtops_email=None,
+                match_source="github_oauth_self",
+            )
+            await session.commit()
+
+        self._login_cache[github_login] = user_id
+        logger.info(
+            "GitHub self identity mapping ensured org=%s user_id=%s github_login=%s",
+            self.organization_id,
+            user_id,
+            github_login,
+        )
 
     # ── QUERY capability ───────────────────────────────────────────────
 

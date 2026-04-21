@@ -335,7 +335,7 @@ export function DataSources(): JSX.Element {
   const [slackVerifyCodeLoading, setSlackVerifyCodeLoading] = useState<boolean>(false);
   const [showSlackVerificationModal, setShowSlackVerificationModal] = useState(false);
   const [showConnectModal, setShowConnectModal] = useState(false);
-  const [identityMappingProvider, setIdentityMappingProvider] = useState<string | null>(null);
+  const [identityMappingProvider, setIdentityMappingProvider] = useState<'slack' | null>(null);
   const [connectSearch, setConnectSearch] = useState('');
   const [showCodeSandboxWarning, setShowCodeSandboxWarning] = useState(false);
 
@@ -688,7 +688,6 @@ export function DataSources(): JSX.Element {
       await fetchGitHubTrackedRepos();
       void fetchIntegrations();
       setGithubReposExpanded(false);
-      setIdentityMappingProvider("github");
     } catch (e) {
       setGithubReposError(e instanceof Error ? e.message : 'Failed to save');
     } finally {
@@ -1675,6 +1674,16 @@ export function DataSources(): JSX.Element {
                   >
                     {githubSaving ? 'Saving…' : 'Save tracked repos'}
                   </button>
+                  <p className="text-xs text-surface-500">
+                    Need to map external users? Organization admins can manage identity mappings in the{' '}
+                    <a
+                      href="/org-settings"
+                      className="text-primary-400 hover:text-primary-300 underline"
+                    >
+                      Team UI
+                    </a>
+                    .
+                  </p>
                 </>
               )}
             </>
