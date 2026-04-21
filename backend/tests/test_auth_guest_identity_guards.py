@@ -60,7 +60,7 @@ def test_link_identity_rejects_guest_target(monkeypatch):
     )
 
     fake_session = _FakeSession(users={target_user_id: guest_user}, mapping=mapping)
-    monkeypatch.setattr(auth, "get_session", lambda: _FakeSessionContext(fake_session))
+    monkeypatch.setattr(auth, "get_session", lambda **kwargs: _FakeSessionContext(fake_session))
 
     with pytest.raises(HTTPException) as exc:
         asyncio.run(
@@ -92,7 +92,7 @@ def test_unlink_identity_rejects_guest_mapping(monkeypatch):
     )
 
     fake_session = _FakeSession(users={requester_id: requester, guest_user_id: guest_user}, mapping=mapping)
-    monkeypatch.setattr(auth, "get_session", lambda: _FakeSessionContext(fake_session))
+    monkeypatch.setattr(auth, "get_session", lambda **kwargs: _FakeSessionContext(fake_session))
 
     with pytest.raises(HTTPException) as exc:
         asyncio.run(

@@ -316,6 +316,12 @@ class WorkspaceMessenger(BaseMessenger):
                 self.meta.slug, message.external_user_id, workspace_id,
             )
 
+        await self._ensure_unmapped_identity(
+            organization_id=organization_id,
+            external_user_id=message.external_user_id,
+            external_email=email,
+        )
+
         return await self._resolve_guest_user(organization_id)
 
     def _extract_email_from_profile(self, profile: dict[str, Any]) -> str | None:
@@ -360,6 +366,56 @@ class WorkspaceMessenger(BaseMessenger):
             if guest and getattr(guest, "is_guest", False):
                 return guest
             return None
+
+    async def _ensure_unmapped_identity(
+        self,
+        organization_id: str,
+        external_user_id: str,
+        external_email: str | None,
+    ) -> None:
+        """Create an unmapped ExternalIdentityMapping so admins can manually link it."""
+        from models.external_identity_mapping import ExternalIdentityMapping
+
+        platform: str = self.meta.slug
+        normalized_ext_id: str = external_user_id.strip().upper() if external_user_id else ""
+        if not normalized_ext_id:
+            return
+        try:
+            async with get_admin_session() as session:
+                existing = await session.execute(
+                    select(ExternalIdentityMapping)
+                    .where(ExternalIdentityMapping.organization_id == UUID(organization_id))
+                    .where(ExternalIdentityMapping.source == platform)
+                    .where(ExternalIdentityMapping.external_userid == normalized_ext_id)
+                    .limit(1)
+                )
+                if existing.scalar_one_or_none() is not None:
+                    return
+                now: datetime = datetime.now(UTC).replace(tzinfo=None)
+                mapping = ExternalIdentityMapping(
+                    id=_uuid.uuid4(),
+                    organization_id=UUID(organization_id),
+                    user_id=None,
+                    revtops_email=None,
+                    external_userid=normalized_ext_id,
+                    external_email=external_email,
+                    source=platform,
+                    match_source="messenger_unmatched",
+                    created_at=now,
+                    updated_at=now,
+                )
+                session.add(mapping)
+                await session.commit()
+                logger.info(
+                    "[%s] Created unmapped identity org=%s ext=%s email=%s",
+                    platform, organization_id, normalized_ext_id, external_email,
+                )
+        except Exception:
+            logger.debug(
+                "[%s] Failed to create unmapped identity org=%s ext=%s",
+                platform, organization_id, normalized_ext_id,
+                exc_info=True,
+            )
 
     # ------------------------------------------------------------------
     # Organisation resolution
@@ -414,6 +470,45 @@ class WorkspaceMessenger(BaseMessenger):
             row = result.first()
             if row:
                 org_id = str(row[0])
+
+        # 1b. Validate the bot-install org has an active subscription; if not,
+        #     check Integration table for an org that does (same workspace may
+        #     be connected to a stale org with no credits).
+        if org_id is not None:
+            async with get_admin_session() as session:
+                org_row = await session.execute(
+                    select(Organization.subscription_status).where(
+                        Organization.id == UUID(org_id)
+                    )
+                )
+                status: str | None = (org_row.scalar_one_or_none() or "")
+                if status not in ("active", "trialing"):
+                    alt_result = await session.execute(
+                        select(Integration.organization_id, Organization.subscription_status)
+                        .join(Organization, Organization.id == Integration.organization_id)
+                        .where(Integration.connector == platform)
+                        .where(Integration.is_active == True)  # noqa: E712
+                        .where(Organization.subscription_status.in_(("active", "trialing")))
+                    )
+                    for alt_row in alt_result:
+                        alt_extra_check = await session.execute(
+                            select(Integration.extra_data)
+                            .where(Integration.organization_id == alt_row[0])
+                            .where(Integration.connector == platform)
+                            .where(Integration.is_active == True)  # noqa: E712
+                        )
+                        for (extra_data_row,) in alt_extra_check:
+                            stored_ws: str | None = (extra_data_row or {}).get("team_id") or (extra_data_row or {}).get("workspace_id")
+                            if stored_ws == workspace_id:
+                                logger.info(
+                                    "[%s] Bot-install org %s has no active subscription; "
+                                    "preferring org %s with status=%s for workspace %s",
+                                    platform, org_id, alt_row[0], alt_row[1], workspace_id,
+                                )
+                                org_id = str(alt_row[0])
+                                break
+                        if org_id != str(row[0]):
+                            break
 
         # 2. Fall back to Integration table (for Nango-based installs)
         if org_id is None:
