@@ -123,6 +123,13 @@ interface OrganizationPanelProps {
   mode?: 'panel' | 'page';
 }
 
+const MODEL_FAMILY_DEFAULTS: Record<string, { primary: string; fast: string }> = {
+  anthropic: { primary: 'claude-opus-4-6', fast: 'claude-haiku-4-5-20251001' },
+  minimax: { primary: 'MiniMax-M2.7', fast: 'MiniMax-M2.7-highspeed' },
+  openai: { primary: 'gpt-5', fast: 'gpt-5-mini' },
+  gemini: { primary: 'gemini-2.5-pro', fast: 'gemini-2.5-flash' },
+};
+
 export function OrganizationPanel({ organization, currentUser, initialTab = 'team', onClose, mode = 'panel' }: OrganizationPanelProps): JSX.Element {
   const queryClient = useQueryClient();
   const setOrganization = useAppStore((state) => state.setOrganization);
@@ -190,6 +197,7 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
   const [llmWorkflowModel, setLlmWorkflowModel] = useState<string>(organization.llmWorkflowModel ?? '');
   const [llmModelMap, setLlmModelMap] = useState<Record<string, string>>({});
   const [isModelSettingsLoading, setIsModelSettingsLoading] = useState<boolean>(false);
+  const [modelFamilyWarning, setModelFamilyWarning] = useState<string | null>(null);
   const [settingsSaved, setSettingsSaved] = useState(false);
   const [isUploadingLogo, setIsUploadingLogo] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -205,6 +213,7 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
     setLlmPrimaryModel(organization.llmPrimaryModel ?? '');
     setLlmCheapModel(organization.llmCheapModel ?? '');
     setLlmWorkflowModel(organization.llmWorkflowModel ?? '');
+    setModelFamilyWarning(null);
     setSettingsSaved(false);
     setExpandedMemberId(null);
     setMenuOpenMemberId(null);
@@ -656,28 +665,95 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
   };
 
   const handleModelChange = async (field: 'llmPrimaryModel' | 'llmCheapModel' | 'llmWorkflowModel', value: string): Promise<void> => {
-    const prev: string = field === 'llmPrimaryModel'
-      ? llmPrimaryModel
-      : field === 'llmCheapModel'
-        ? llmCheapModel
-        : llmWorkflowModel;
-    if (field === 'llmPrimaryModel') setLlmPrimaryModel(value);
-    else if (field === 'llmCheapModel') setLlmCheapModel(value);
-    else setLlmWorkflowModel(value);
+    const inferModelFamily = (modelName: string): string | null => {
+      const explicitProvider: string | undefined = llmModelMap[modelName];
+      if (explicitProvider && explicitProvider.trim()) return explicitProvider.trim().toLowerCase();
+      const normalized = modelName.trim().toLowerCase();
+      if (normalized.startsWith('claude')) return 'anthropic';
+      if (normalized.startsWith('minimax')) return 'minimax';
+      if (normalized.startsWith('gemini')) return 'gemini';
+      if (normalized.startsWith('gpt') || normalized.startsWith('o1') || normalized.startsWith('o3') || normalized.startsWith('o4')) return 'openai';
+      return null;
+    };
+
+    const resolveFamilyDefaultModel = (family: string, modelRole: 'primary' | 'fast'): string => {
+      const defaults = MODEL_FAMILY_DEFAULTS[family];
+      if (defaults) {
+        return modelRole === 'primary' ? defaults.primary : defaults.fast;
+      }
+      const knownFamilyModel = Object.entries(llmModelMap).find(([, provider]) => provider?.trim().toLowerCase() === family)?.[0];
+      if (knownFamilyModel) return knownFamilyModel;
+      return '';
+    };
+
+    const prevPrimary = llmPrimaryModel;
+    const prevCheap = llmCheapModel;
+    const prevWorkflow = llmWorkflowModel;
+
+    let nextPrimary = field === 'llmPrimaryModel' ? value : llmPrimaryModel;
+    let nextCheap = field === 'llmCheapModel' ? value : llmCheapModel;
+    let warningMessage: string | null = null;
+
+    if (field === 'llmCheapModel' && nextCheap.trim() && nextPrimary.trim()) {
+      const selectedCheapFamily = inferModelFamily(nextCheap);
+      const primaryFamily = inferModelFamily(nextPrimary);
+      if (selectedCheapFamily && primaryFamily && selectedCheapFamily !== primaryFamily) {
+        nextPrimary = resolveFamilyDefaultModel(selectedCheapFamily, 'primary');
+        warningMessage = `Fast model family changed to ${selectedCheapFamily}, so primary model was reset to that family default (${nextPrimary || 'default'}).`;
+      }
+    }
+
+    if (field === 'llmPrimaryModel' && nextPrimary.trim() && nextCheap.trim()) {
+      const selectedPrimaryFamily = inferModelFamily(nextPrimary);
+      const cheapFamily = inferModelFamily(nextCheap);
+      if (selectedPrimaryFamily && cheapFamily && selectedPrimaryFamily !== cheapFamily) {
+        nextCheap = resolveFamilyDefaultModel(selectedPrimaryFamily, 'fast');
+        warningMessage = `Primary model family changed to ${selectedPrimaryFamily}, so fast model was reset to that family default (${nextCheap || 'default'}).`;
+      }
+    }
+
+    setModelFamilyWarning(warningMessage);
+    setLlmPrimaryModel(nextPrimary);
+    setLlmCheapModel(nextCheap);
+    if (field === 'llmWorkflowModel') setLlmWorkflowModel(value);
 
     try {
-      await updateOrgMutation.mutateAsync({
+      const payload: {
+        orgId: string;
+        userId: string;
+        llmPrimaryModel?: string | null;
+        llmCheapModel?: string | null;
+        llmWorkflowModel?: string | null;
+      } = {
         orgId: organization.id,
         userId: currentUser.id,
-        [field]: value || null,
+      };
+      if (field === 'llmPrimaryModel' || (field === 'llmCheapModel' && nextPrimary !== llmPrimaryModel)) {
+        payload.llmPrimaryModel = nextPrimary || null;
+      }
+      if (field === 'llmCheapModel' || (field === 'llmPrimaryModel' && nextCheap !== llmCheapModel)) {
+        payload.llmCheapModel = nextCheap || null;
+      }
+      if (field === 'llmWorkflowModel') {
+        payload.llmWorkflowModel = value || null;
+      }
+
+      await updateOrgMutation.mutateAsync({
+        ...payload,
       });
-      setOrganization({ ...organization, [field]: value || null });
+      setOrganization({
+        ...organization,
+        llmPrimaryModel: nextPrimary || null,
+        llmCheapModel: nextCheap || null,
+        llmWorkflowModel: field === 'llmWorkflowModel' ? (value || null) : organization.llmWorkflowModel,
+      });
       setSettingsSaved(true);
       setTimeout(() => setSettingsSaved(false), 2000);
     } catch (error) {
-      if (field === 'llmPrimaryModel') setLlmPrimaryModel(prev);
-      else if (field === 'llmCheapModel') setLlmCheapModel(prev);
-      else setLlmWorkflowModel(prev);
+      setModelFamilyWarning(null);
+      setLlmPrimaryModel(prevPrimary);
+      setLlmCheapModel(prevCheap);
+      setLlmWorkflowModel(prevWorkflow);
       alert(`Failed to save: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   };
@@ -1456,6 +1532,11 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
                         </select>
                         <p className="text-xs text-surface-500 mt-1">Used for summaries, titles, and background tasks</p>
                       </div>
+                      {modelFamilyWarning && (
+                        <p className="text-xs text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded-md px-2.5 py-2">
+                          {modelFamilyWarning}
+                        </p>
+                      )}
                       <div>
                         <label className="block text-sm text-surface-400 mb-1.5">Workflow model</label>
                         <select
