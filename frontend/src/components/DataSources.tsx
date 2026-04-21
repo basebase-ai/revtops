@@ -258,6 +258,7 @@ async function getResponseErrorMessage(response: Response, fallback: string): Pr
 export function DataSources(): JSX.Element {
   // Get user/org from Zustand (auth state)
   const { user, organization, organizations } = useAppStore();
+  const setCurrentView = useAppStore((state) => state.setCurrentView);
   const fetchUserOrganizations = useAppStore((state) => state.fetchUserOrganizations);
   
 
@@ -1706,12 +1707,13 @@ export function DataSources(): JSX.Element {
           )}
           <p className="text-xs text-surface-500">
             If you want to map users other than yourself, admins can manage identity mappings in the{' '}
-            <a
-              href="/org-settings"
+            <button
+              type="button"
+              onClick={() => setCurrentView('org-settings')}
               className="text-primary-400 hover:text-primary-300 underline"
             >
               Team UI
-            </a>
+            </button>
             .
           </p>
         </div>
