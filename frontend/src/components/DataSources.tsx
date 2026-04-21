@@ -1674,20 +1674,20 @@ export function DataSources(): JSX.Element {
                   >
                     {githubSaving ? 'Saving…' : 'Save tracked repos'}
                   </button>
-                  <p className="text-xs text-surface-500">
-                    Need to map external users? Organization admins can manage identity mappings in the{' '}
-                    <a
-                      href="/org-settings"
-                      className="text-primary-400 hover:text-primary-300 underline"
-                    >
-                      Team UI
-                    </a>
-                    .
-                  </p>
                 </>
               )}
             </>
           )}
+          <p className="text-xs text-surface-500">
+            If you want to map users other than yourself, admins can manage identity mappings in the{' '}
+            <a
+              href="/org-settings"
+              className="text-primary-400 hover:text-primary-300 underline"
+            >
+              Team UI
+            </a>
+            .
+          </p>
         </div>
       );
     };
