@@ -679,7 +679,14 @@ Use `write_on_connector(connector='linear', operation='...', data={...})` with `
         conversation_id: str,
         attachment_ids: list[str],
     ) -> list[tuple[str, str, bytes]]:
-        """Load attachment bytes scoped to org and conversation; order matches ``attachment_ids``."""
+        """Load attachment bytes scoped to org and conversation; order matches ``attachment_ids``.
+
+        NOTE:
+        We intentionally select scalar columns (not ORM instances) so callers can
+        safely consume results after the DB session context exits. This avoids
+        detached-instance/session-binding errors when attachment bytes are used in
+        follow-up API calls (e.g., Linear uploads).
+        """
         org_uuid: UUID = UUID(self.organization_id)
         conv_uuid: UUID = UUID(conversation_id)
         id_list: list[UUID] = []
@@ -693,27 +700,42 @@ Use `write_on_connector(connector='linear', operation='...', data={...})` with `
 
         async with get_session(organization_id=self.organization_id) as session:
             stmt = (
-                select(ChatAttachment)
+                select(
+                    ChatAttachment.id,
+                    ChatAttachment.filename,
+                    ChatAttachment.mime_type,
+                    ChatAttachment.content,
+                )
                 .join(Conversation, ChatAttachment.conversation_id == Conversation.id)
                 .where(Conversation.organization_id == org_uuid)
                 .where(ChatAttachment.conversation_id == conv_uuid)
                 .where(ChatAttachment.id.in_(id_list))
             )
             result = await session.execute(stmt)
-            rows_db: list[ChatAttachment] = list(result.scalars().all())
+            rows_db: list[tuple[UUID, str, str, bytes]] = list(result.all())
 
-        by_id: dict[UUID, ChatAttachment] = {r.id: r for r in rows_db}
+        by_id: dict[UUID, tuple[str, str, bytes]] = {
+            row_id: (filename, mime_type, content)
+            for row_id, filename, mime_type, content in rows_db
+        }
         ordered: list[tuple[str, str, bytes]] = []
         for uid in id_list:
-            row: ChatAttachment | None = by_id.get(uid)
-            if row is None:
+            row_data: tuple[str, str, bytes] | None = by_id.get(uid)
+            if row_data is None:
                 logger.warning(
                     "[linear] Attachment %s not found or not in conversation %s",
                     uid,
                     conversation_id,
                 )
                 continue
-            ordered.append((row.filename, row.mime_type, row.content))
+            ordered.append(row_data)
+
+        logger.info(
+            "[linear] Loaded %d/%d chat attachments for conversation=%s",
+            len(ordered),
+            len(id_list),
+            conversation_id,
+        )
         return ordered
 
     async def _markdown_block_from_chat_attachments(
