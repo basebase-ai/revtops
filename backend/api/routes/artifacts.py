@@ -467,7 +467,7 @@ def _generate_chart_html(plotly_json: str, title: str) -> str:
         raise ValueError("Invalid chart payload: 'config' must be a JSON object")
 
     safe_title: str = html.escape(title, quote=True)
-    safe_chart_json: str = json.dumps(chart_spec, ensure_ascii=False)
+    safe_chart_json: str = json.dumps(chart_spec, ensure_ascii=False).replace("</", "<\\/")
 
     return f"""<!DOCTYPE html>
 <html lang="en">

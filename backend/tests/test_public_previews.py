@@ -14,7 +14,7 @@ from api.routes.public import (
     _public_preview_title,
     share_router,
 )
-from api.routes.artifacts import get_artifact
+from api.routes.artifacts import _generate_chart_html, get_artifact
 from starlette.routing import Match
 from services.public_previews import build_preview_html, decode_data_url_image, render_card_png
 
@@ -191,3 +191,15 @@ def test_api_artifact_route_is_resolved_before_slug_unfurl_route() -> None:
             break
 
     assert matched_endpoint is get_artifact
+
+
+def test_generate_chart_html_escapes_script_termination_sequences() -> None:
+    plotly_json = (
+        '{"data":[{"type":"scatter","text":"<\\/script><script>alert(1)</script>"}],'
+        '"layout":{},"config":{}}'
+    )
+
+    html = _generate_chart_html(plotly_json, "Quarterly report")
+
+    assert "</script><script>alert(1)</script>" not in html
+    assert "<\\/script><script>alert(1)<\\/script>" in html
