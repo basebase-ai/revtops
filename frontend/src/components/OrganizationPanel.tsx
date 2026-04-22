@@ -1000,8 +1000,8 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
                       return (
                         <div key={member.id} className="rounded-lg bg-surface-800/50">
                           {/* Member row */}
-                          <div className="flex flex-col sm:flex-row sm:items-center gap-3 p-3">
-                            <div className="flex items-center gap-3 flex-1 min-w-0">
+                          <div className="flex flex-col gap-2 p-3">
+                            <div className="flex items-start gap-3 min-w-0">
                               <Avatar user={member} size="lg" />
                               <div className="flex-1 min-w-0">
                                 <div className="flex items-center gap-2">
@@ -1024,9 +1024,64 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
                                 )}
                                 <p className="text-sm text-surface-400 truncate">{member.email}</p>
                               </div>
+                              {/* Three-dots menu */}
+                              {!isGuest && (
+                                <div className="relative flex-shrink-0">
+                                  <button
+                                    type="button"
+                                    onClick={(e) => { e.stopPropagation(); setMenuOpenMemberId(isMenuOpen ? null : member.id); }}
+                                    className="p-1 rounded hover:bg-surface-700/60 transition-colors text-surface-400 hover:text-surface-200"
+                                  >
+                                    <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+                                      <path d="M10 6a2 2 0 110-4 2 2 0 010 4zm0 6a2 2 0 110-4 2 2 0 010 4zm0 6a2 2 0 110-4 2 2 0 010 4z" />
+                                    </svg>
+                                  </button>
+                                  {isMenuOpen && (
+                                    <div className="absolute right-0 top-full mt-1 w-40 rounded-lg bg-surface-700 border border-surface-600 shadow-xl z-50 py-1">
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          setMenuOpenMemberId(null);
+                                          setExpandedMemberId(isExpanded ? null : member.id);
+                                        }}
+                                        className="w-full text-left px-3 py-2 text-sm text-surface-200 hover:bg-surface-600/60 transition-colors"
+                                      >
+                                        Link accounts
+                                      </button>
+                                      {canAdministerOrg && (
+                                        <>
+                                          <button
+                                            type="button"
+                                            onClick={() => {
+                                              setMenuOpenMemberId(null);
+                                              const nextRole: 'admin' | 'member' = isOrgAdminMember ? 'member' : 'admin';
+                                              void handleUpdateMemberRole(member.id, nextRole);
+                                            }}
+                                            disabled={updateMemberRoleMutation.isPending}
+                                            className="w-full text-left px-3 py-2 text-sm text-surface-200 hover:bg-surface-600/60 transition-colors disabled:opacity-50"
+                                          >
+                                            {isOrgAdminMember ? 'Demote to user' : 'Promote to admin'}
+                                          </button>
+                                          <button
+                                            type="button"
+                                            onClick={() => {
+                                              setMenuOpenMemberId(null);
+                                              void handleDeleteMember(member.id);
+                                            }}
+                                            disabled={deleteMemberMutation.isPending}
+                                            className="w-full text-left px-3 py-2 text-sm text-red-400 hover:bg-surface-600/60 transition-colors disabled:opacity-50"
+                                          >
+                                            Delete User
+                                          </button>
+                                        </>
+                                      )}
+                                    </div>
+                                  )}
+                                </div>
+                              )}
                             </div>
                             {/* Identity badges */}
-                            <div className="flex items-center gap-1.5 flex-wrap sm:flex-nowrap">
+                            <div className="flex items-center gap-1.5 flex-wrap">
                               {isGuest && (
                                 <button
                                   type="button"
@@ -1058,61 +1113,6 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
                                 !isGuest && <span className="text-xs text-surface-500">No links</span>
                               )}
                             </div>
-                            {/* Three-dots menu */}
-                            {!isGuest && (
-                              <div className="relative flex-shrink-0">
-                                <button
-                                  type="button"
-                                  onClick={(e) => { e.stopPropagation(); setMenuOpenMemberId(isMenuOpen ? null : member.id); }}
-                                  className="p-1 rounded hover:bg-surface-700/60 transition-colors text-surface-400 hover:text-surface-200"
-                                >
-                                  <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
-                                    <path d="M10 6a2 2 0 110-4 2 2 0 010 4zm0 6a2 2 0 110-4 2 2 0 010 4zm0 6a2 2 0 110-4 2 2 0 010 4z" />
-                                  </svg>
-                                </button>
-                                {isMenuOpen && (
-                                  <div className="absolute right-0 top-full mt-1 w-40 rounded-lg bg-surface-700 border border-surface-600 shadow-xl z-50 py-1">
-                                    <button
-                                      type="button"
-                                      onClick={() => {
-                                        setMenuOpenMemberId(null);
-                                        setExpandedMemberId(isExpanded ? null : member.id);
-                                      }}
-                                      className="w-full text-left px-3 py-2 text-sm text-surface-200 hover:bg-surface-600/60 transition-colors"
-                                    >
-                                      Link accounts
-                                    </button>
-                                    {canAdministerOrg && (
-                                      <>
-                                        <button
-                                          type="button"
-                                          onClick={() => {
-                                            setMenuOpenMemberId(null);
-                                            const nextRole: 'admin' | 'member' = isOrgAdminMember ? 'member' : 'admin';
-                                            void handleUpdateMemberRole(member.id, nextRole);
-                                          }}
-                                          disabled={updateMemberRoleMutation.isPending}
-                                          className="w-full text-left px-3 py-2 text-sm text-surface-200 hover:bg-surface-600/60 transition-colors disabled:opacity-50"
-                                        >
-                                          {isOrgAdminMember ? 'Demote to user' : 'Promote to admin'}
-                                        </button>
-                                        <button
-                                          type="button"
-                                          onClick={() => {
-                                            setMenuOpenMemberId(null);
-                                            void handleDeleteMember(member.id);
-                                          }}
-                                          disabled={deleteMemberMutation.isPending}
-                                          className="w-full text-left px-3 py-2 text-sm text-red-400 hover:bg-surface-600/60 transition-colors disabled:opacity-50"
-                                        >
-                                          Delete User
-                                        </button>
-                                      </>
-                                    )}
-                                  </div>
-                                )}
-                              </div>
-                            )}
                           </div>
 
                           {/* Expanded identity details */}
@@ -1124,14 +1124,16 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
                                   {identities.map((identity) => (
                                     <div
                                       key={identity.id}
-                                    className="flex flex-col sm:flex-row sm:items-center gap-1.5 sm:gap-2 text-xs px-2 py-1.5 rounded bg-surface-700/30"
+                                    className="flex flex-col gap-1.5 text-xs px-2 py-1.5 rounded bg-surface-700/30"
                                   >
-                                      <span className={`px-1.5 py-0.5 font-medium rounded w-fit ${sourceColor(identity.source)}`}>
-                                        {sourceLabel(identity.source)}
-                                      </span>
-                                      <span className="text-surface-300 truncate">
-                                        {identity.externalEmail ?? identity.externalUserid ?? 'Unknown'}
-                                      </span>
+                                      <div className="flex items-center gap-2 min-w-0">
+                                        <span className={`px-1.5 py-0.5 font-medium rounded whitespace-nowrap ${sourceColor(identity.source)}`}>
+                                          {sourceLabel(identity.source)}
+                                        </span>
+                                        <span className="text-surface-300 truncate">
+                                          {identity.externalEmail ?? identity.externalUserid ?? 'Unknown'}
+                                        </span>
+                                      </div>
                                       <div className="sm:ml-auto flex items-center gap-2 whitespace-nowrap">
                                         <span className="text-surface-500">
                                           {identity.matchSource.replace(/_/g, ' ')}
@@ -1179,7 +1181,7 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
                                         disabled={linkIdentityMutation.isPending || unlinkIdentityMutation.isPending}
                                         className="flex flex-wrap sm:flex-nowrap items-center gap-2 text-xs px-2 py-1.5 rounded bg-surface-700/20 hover:bg-surface-700/50 transition-colors w-full text-left disabled:opacity-50"
                                       >
-                                        <span className={`px-1.5 py-0.5 font-medium rounded w-fit ${sourceColor(ui.source)}`}>
+                                        <span className={`px-1.5 py-0.5 font-medium rounded whitespace-nowrap ${sourceColor(ui.source)}`}>
                                           {sourceLabel(ui.source)}
                                         </span>
                                         <span className="text-surface-400 truncate">
