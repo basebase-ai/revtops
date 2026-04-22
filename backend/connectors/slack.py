@@ -10,6 +10,7 @@ Responsibilities:
 """
 
 import asyncio
+import base64
 import logging
 import re
 import uuid
@@ -201,6 +202,13 @@ Returns all channels the bot can see, with id, name, and is_private.
 Call via `query_on_connector(connector='slack', query='channel_info:<channel_id>')`.
 
 Returns details for a single channel including topic and purpose.
+
+## Query: read_file
+
+Call via `query_on_connector(connector='slack', query='read_file:<file_id_or_url>')`.
+
+Reads a Slack file by file ID (recommended) or a `url_private` URL and returns
+metadata + extracted text for text/PDF files. Binary files return base64.
 
 ## Action: send_message
 
@@ -1258,7 +1266,88 @@ Returns normalized messages for one channel since a cutoff (does not write to th
             if info:
                 return {"channel": {"id": info.get("id"), "name": info.get("name"), "is_private": info.get("is_private", False), "topic": (info.get("topic") or {}).get("value", ""), "purpose": (info.get("purpose") or {}).get("value", "")}}
             return {"error": f"Channel {channel_id} not found"}
-        return {"error": f"Unknown query: {request}. Supported: list_channels, channel_info:<channel_id>"}
+        if stripped.lower().startswith("read_file:"):
+            _, _, file_ref = stripped.partition(":")
+            file_ref = file_ref.strip()
+            if not file_ref:
+                return {"error": "read_file requires a file ID or url_private URL"}
+            return await self._read_file_for_query(file_ref)
+        return {"error": f"Unknown query: {request}. Supported: list_channels, channel_info:<channel_id>, read_file:<file_id_or_url>"}
+
+    async def _read_file_for_query(self, file_ref: str) -> dict[str, Any]:
+        """Download and normalize Slack file content for ``query_on_connector``."""
+        normalized_ref: str = file_ref.strip()
+        if normalized_ref.startswith("id="):
+            normalized_ref = normalized_ref[3:].strip()
+        if normalized_ref.startswith("url="):
+            normalized_ref = normalized_ref[4:].strip()
+
+        file_data: dict[str, Any] | None = None
+        download_url: str | None = None
+
+        if normalized_ref.startswith("http://") or normalized_ref.startswith("https://"):
+            download_url = normalized_ref
+        else:
+            file_data = await self._make_request("GET", "files.info", params={"file": normalized_ref})
+            if not file_data.get("ok"):
+                return {"error": f"Slack files.info failed for file {normalized_ref}"}
+            file_obj: dict[str, Any] = file_data.get("file") or {}
+            download_url = file_obj.get("url_private_download") or file_obj.get("url_private")
+            file_data = file_obj
+
+        if not download_url:
+            return {"error": f"No download URL available for Slack file reference: {file_ref}"}
+
+        raw_bytes: bytes = await self.download_file(download_url)
+        filename: str = str((file_data or {}).get("name") or "slack_file")
+        mime_type: str = str((file_data or {}).get("mimetype") or "application/octet-stream")
+        size: int = len(raw_bytes)
+
+        content_text: str | None = None
+        if mime_type.startswith("text/") or filename.lower().endswith((".txt", ".md", ".csv", ".json", ".yaml", ".yml", ".xml")):
+            content_text = raw_bytes.decode("utf-8", errors="replace")
+        elif mime_type == "application/pdf" or filename.lower().endswith(".pdf"):
+            from services.file_handler import StoredFile, pdf_to_text_block
+
+            block = pdf_to_text_block(
+                StoredFile(
+                    upload_id="slack_query_file",
+                    filename=filename,
+                    mime_type=mime_type,
+                    size=size,
+                    data=raw_bytes,
+                )
+            )
+            content_text = str(block.get("text") or "")
+
+        if content_text is not None:
+            max_chars = 200_000
+            if len(content_text) > max_chars:
+                content_text = (
+                    content_text[:max_chars]
+                    + f"\n\n[Truncated — first {max_chars:,} characters shown of {len(content_text):,}]"
+                )
+            return {
+                "ok": True,
+                "file": {
+                    "filename": filename,
+                    "mime_type": mime_type,
+                    "size": size,
+                    "content": content_text,
+                },
+            }
+
+        encoded: str = base64.standard_b64encode(raw_bytes).decode("ascii")
+        return {
+            "ok": True,
+            "file": {
+                "filename": filename,
+                "mime_type": mime_type,
+                "size": size,
+                "content_base64": encoded,
+                "note": "Binary file returned as base64 because text extraction is not supported for this mime type.",
+            },
+        }
 
     async def execute_action(self, action: str, params: dict[str, Any]) -> dict[str, Any]:
         """Execute a side-effect action."""

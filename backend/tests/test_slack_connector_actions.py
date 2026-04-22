@@ -73,6 +73,55 @@ def test_execute_action_fetch_channel_history_returns_normalized_messages(monkey
     assert result["count"] == 1
 
 
+def test_query_read_file_by_id_returns_text_content(monkeypatch) -> None:
+    connector = SlackConnector(organization_id="00000000-0000-0000-0000-000000000001")
+
+    async def _fake_make_request(method: str, endpoint: str, **kwargs: object):
+        assert method == "GET"
+        assert endpoint == "files.info"
+        assert kwargs.get("params") == {"file": "F123"}
+        return {
+            "ok": True,
+            "file": {
+                "id": "F123",
+                "name": "notes.txt",
+                "mimetype": "text/plain",
+                "url_private_download": "https://files.slack.com/files-pri/T/F123/download/notes.txt",
+            },
+        }
+
+    async def _fake_download_file(url_private: str) -> bytes:
+        assert "F123" in url_private
+        return b"hello from slack"
+
+    monkeypatch.setattr(connector, "_make_request", _fake_make_request)
+    monkeypatch.setattr(connector, "download_file", _fake_download_file)
+
+    result = asyncio.run(connector.query("read_file:F123"))
+    assert result["ok"] is True
+    assert result["file"]["filename"] == "notes.txt"
+    assert result["file"]["content"] == "hello from slack"
+
+
+def test_query_read_file_by_url_returns_base64_for_binary(monkeypatch) -> None:
+    connector = SlackConnector(organization_id="00000000-0000-0000-0000-000000000001")
+
+    async def _fake_download_file(url_private: str) -> bytes:
+        assert url_private == "https://files.slack.com/files-pri/T/F999/download/blob.bin"
+        return b"\x01\x02"
+
+    monkeypatch.setattr(connector, "download_file", _fake_download_file)
+
+    result = asyncio.run(
+        connector.query("read_file:https://files.slack.com/files-pri/T/F999/download/blob.bin")
+    )
+    assert result["ok"] is True
+    assert result["file"]["filename"] == "slack_file"
+    assert result["file"]["mime_type"] == "application/octet-stream"
+    assert result["file"]["content_base64"] == "AQI="
+    assert "Binary file returned as base64" in result["file"]["note"]
+
+
 
 
 def test_execute_action_fetch_channel_history_accepts_channel_id_alias(monkeypatch) -> None:
