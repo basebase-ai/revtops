@@ -1243,6 +1243,21 @@ class WorkspaceMessenger(BaseMessenger):
                     "sender_slack_id": message.external_user_id,
                     "thread_ts": thread_id,
                 }
+                raw_files: Any = message.raw_attachments or []
+                if isinstance(raw_files, list):
+                    persisted_files: list[dict[str, Any]] = [
+                        file_data
+                        for file_data in raw_files
+                        if isinstance(file_data, dict)
+                    ]
+                    if persisted_files:
+                        custom_fields["files"] = persisted_files
+                        logger.debug(
+                            "[%s] Persisting %d attachment(s) in activity cache source_id=%s",
+                            self.meta.slug,
+                            len(persisted_files),
+                            source_id,
+                        )
                 if channel_name:
                     custom_fields["channel_name"] = channel_name
 

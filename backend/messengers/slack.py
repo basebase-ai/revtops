@@ -359,6 +359,12 @@ class SlackMessenger(WorkspaceMessenger):
             cf: dict[str, Any] = custom_fields or {}
             raw_thread_ts: str = str(cf.get("thread_ts") or "").strip()
             thread_ts: str = raw_thread_ts or ts_value
+            raw_files: Any = cf.get("files")
+            files: list[dict[str, Any]] = (
+                [file_data for file_data in raw_files if isinstance(file_data, dict)]
+                if isinstance(raw_files, list)
+                else []
+            )
             cached_messages.append(
                 {
                     "ts": ts_value,
@@ -366,15 +372,20 @@ class SlackMessenger(WorkspaceMessenger):
                     "is_thread_message": bool(raw_thread_ts),
                     "user": str(cf.get("user_id") or "unknown"),
                     "text": description or "",
-                    "files": [],
+                    "files": files,
                     "reply_count": 0,
                 }
             )
+        file_count: int = sum(
+            len(message.get("files") or [])
+            for message in cached_messages
+        )
         logger.info(
-            "[slack] Loaded channel context from persisted activity cache channel=%s organization=%s messages=%d",
+            "[slack] Loaded channel context from persisted activity cache channel=%s organization=%s messages=%d files=%d",
             channel_id,
             organization_id,
             len(cached_messages),
+            file_count,
         )
         return self._build_channel_context_payload_from_cached_messages(cached_messages)
 

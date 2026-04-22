@@ -66,6 +66,14 @@ async def test_persist_channel_activity_uses_channel_name():
         message_type=MessageType.DIRECT,
         external_user_id="U123",
         message_id="1710711600.000", # Fixed TS for deterministic testing
+        raw_attachments=[
+            {
+                "id": "F123",
+                "name": "proposal.docx",
+                "url_private_download": "https://files.slack.com/files-pri/T1-F123/download/proposal.docx",
+                "mimetype": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            }
+        ],
         messenger_context={
             "workspace_id": workspace_id,
             "channel_id": channel_id,
@@ -97,6 +105,8 @@ async def test_persist_channel_activity_uses_channel_name():
         assert passed_values["subject"] == f"#{channel_name}"
         assert passed_values["custom_fields"]["channel_name"] == channel_name
         assert passed_values["custom_fields"]["channel_id"] == channel_id
+        assert passed_values["custom_fields"]["files"][0]["id"] == "F123"
+        assert passed_values["custom_fields"]["files"][0]["name"] == "proposal.docx"
         
 @pytest.mark.asyncio
 async def test_enrich_message_context_does_not_overwrite_existing():
@@ -714,3 +724,52 @@ def test_format_single_slack_context_line_includes_file_references():
     assert "q1-report.pdf" in line
     assert "<slack_file_ref id=F123" in line
     assert "url=https://files.slack.com/files-pri/T1-F123/download/q1-report.pdf" in line
+
+
+@pytest.mark.asyncio
+async def test_get_cached_channel_context_payload_from_activity_preserves_file_metadata():
+    messenger = SlackMessenger()
+    org_id = str(uuid4())
+
+    mock_session = AsyncMock()
+    mock_result = MagicMock()
+    mock_result.all.return_value = [
+        (
+            "C456:1710711600.000",
+            "Hey Guys, here is Farooq's proposal",
+            {
+                "channel_id": "C456",
+                "user_id": "U_JACK",
+                "thread_ts": "1710711600.000",
+                "files": [
+                    {
+                        "id": "F123",
+                        "name": "proposal.docx",
+                        "url_private_download": "https://files.slack.com/files-pri/T1-F123/download/proposal.docx",
+                        "mimetype": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    }
+                ],
+            },
+            None,
+            None,
+        )
+    ]
+    mock_session.execute.return_value = mock_result
+    mock_session_ctx = MagicMock(
+        __aenter__=AsyncMock(return_value=mock_session),
+        __aexit__=AsyncMock(return_value=None),
+    )
+
+    with patch("messengers.slack.get_admin_session", return_value=mock_session_ctx):
+        payload = await messenger._get_cached_channel_context_payload_from_activity(
+            organization_id=org_id,
+            channel_id="C456",
+        )
+
+    assert payload is not None
+    channel_messages, _thread_expansions = payload
+    assert len(channel_messages) == 1
+    assert channel_messages[0]["files"][0]["id"] == "F123"
+    rendered = messenger._format_single_slack_context_line(channel_messages[0])
+    assert rendered is not None
+    assert "<slack_file_ref id=F123" in rendered
