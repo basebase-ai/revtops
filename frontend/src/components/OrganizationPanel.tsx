@@ -842,7 +842,7 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
         : 'fixed right-0 top-0 bottom-0 w-full max-w-lg bg-surface-900 border-l border-surface-800 z-50 flex flex-col shadow-2xl'
       }>
         {/* Header */}
-        <header className={`flex items-center justify-between border-b border-surface-800 ${isPageMode ? 'px-8 py-5' : 'px-6 py-4'}`}>
+        <header className={`flex items-center justify-between border-b border-surface-800 ${isPageMode ? 'px-6 sm:px-8 py-5' : 'px-4 sm:px-6 py-4'}`}>
           <div className="flex items-center gap-3">
             {logoUrl ? (
               <img
@@ -873,12 +873,12 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
         </header>
 
         {/* Tabs */}
-        <div className={`flex border-b border-surface-800 ${isPageMode ? 'px-8' : ''}`}>
+        <div className={`flex border-b border-surface-800 overflow-x-auto ${isPageMode ? 'px-6 sm:px-8' : ''}`}>
           {(isPageMode ? (['settings', 'team', 'billing'] as const) : (['team', 'billing', 'settings'] as const)).map((tab) => (
             <button
               key={tab}
               onClick={() => setActiveTab(tab)}
-              className={`px-4 py-3 text-sm font-medium transition-colors ${isPageMode ? '' : 'flex-1'} ${
+              className={`px-4 py-3 text-sm font-medium transition-colors whitespace-nowrap ${isPageMode ? '' : 'flex-1 min-w-[6.5rem]'} ${
                 activeTab === tab
                   ? 'text-primary-400 border-b-2 border-primary-500'
                   : 'text-surface-400 hover:text-surface-200'
@@ -890,7 +890,7 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
         </div>
 
         {/* Content */}
-        <div className={`flex-1 overflow-y-auto ${isPageMode ? 'p-8' : 'p-6'}`}>
+        <div className={`flex-1 overflow-y-auto ${isPageMode ? 'p-6 sm:p-8' : 'p-4 sm:p-6'}`}>
           {activeTab === 'team' && (
             <div className="space-y-6">
               {/* Invite Section */}
@@ -899,7 +899,7 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
                 <p className="mb-2 text-xs text-surface-500">
                   Inviting someone grants access to your org&apos;s data and credit usage.
                 </p>
-                <div className="flex gap-2">
+                <div className="flex flex-col sm:flex-row gap-2">
                   <input
                     type="email"
                     placeholder="colleague@company.com"
@@ -959,33 +959,37 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
                       if (isInvited) {
                         return (
                           <div key={member.id} className="rounded-lg bg-surface-800/50 overflow-hidden">
-                            <div className="flex items-center gap-3 p-3">
-                              <Avatar user={member} size="lg" />
-                              <div className="flex-1 min-w-0">
-                                <span className="font-medium text-surface-100 truncate block">
-                                  {displayName}
-                                </span>
-                                <p className="text-sm text-surface-400 truncate">{member.email}</p>
-                                <p className="text-xs text-amber-400/80 mt-0.5 italic">Invitation pending</p>
+                            <div className="flex flex-col sm:flex-row sm:items-center gap-3 p-3">
+                              <div className="flex items-center gap-3 flex-1 min-w-0">
+                                <Avatar user={member} size="lg" />
+                                <div className="flex-1 min-w-0">
+                                  <span className="font-medium text-surface-100 truncate block">
+                                    {displayName}
+                                  </span>
+                                  <p className="text-sm text-surface-400 truncate">{member.email}</p>
+                                  <p className="text-xs text-amber-400/80 mt-0.5 italic">Invitation pending</p>
+                                </div>
                               </div>
-                              <button
-                                type="button"
-                                onClick={() => void handleResendInvite(member.email, member.id)}
-                                disabled={resendingMemberId === member.id}
-                                className="px-3 py-1.5 text-sm font-medium rounded-lg border border-surface-600 text-surface-300 hover:text-surface-100 hover:border-surface-500 hover:bg-surface-700/50 transition-colors disabled:opacity-50 flex-shrink-0"
-                              >
-                                {resendingMemberId === member.id ? 'Sending...' : 'Resend'}
-                              </button>
-                              {canInviteOrRevokeInvites && (
+                              <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap">
                                 <button
                                   type="button"
-                                  onClick={() => void handleRevokeInvite(member.id)}
-                                  disabled={revokingInviteMemberId === member.id}
-                                  className="px-3 py-1.5 text-sm font-medium rounded-lg border border-rose-700/70 text-rose-300 hover:text-rose-100 hover:border-rose-600 hover:bg-rose-900/30 transition-colors disabled:opacity-50 flex-shrink-0"
+                                  onClick={() => void handleResendInvite(member.email, member.id)}
+                                  disabled={resendingMemberId === member.id}
+                                  className="px-3 py-1.5 text-sm font-medium rounded-lg border border-surface-600 text-surface-300 hover:text-surface-100 hover:border-surface-500 hover:bg-surface-700/50 transition-colors disabled:opacity-50 flex-shrink-0"
                                 >
-                                  {revokingInviteMemberId === member.id ? 'Revoking...' : 'Revoke'}
+                                  {resendingMemberId === member.id ? 'Sending...' : 'Resend'}
                                 </button>
-                              )}
+                                {canInviteOrRevokeInvites && (
+                                  <button
+                                    type="button"
+                                    onClick={() => void handleRevokeInvite(member.id)}
+                                    disabled={revokingInviteMemberId === member.id}
+                                    className="px-3 py-1.5 text-sm font-medium rounded-lg border border-rose-700/70 text-rose-300 hover:text-rose-100 hover:border-rose-600 hover:bg-rose-900/30 transition-colors disabled:opacity-50 flex-shrink-0"
+                                  >
+                                    {revokingInviteMemberId === member.id ? 'Revoking...' : 'Revoke'}
+                                  </button>
+                                )}
+                              </div>
                             </div>
                           </div>
                         );
@@ -996,31 +1000,33 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
                       return (
                         <div key={member.id} className="rounded-lg bg-surface-800/50">
                           {/* Member row */}
-                          <div className="flex items-center gap-3 p-3">
-                            <Avatar user={member} size="lg" />
-                            <div className="flex-1 min-w-0">
-                              <div className="flex items-center gap-2">
-                                <span className="font-medium text-surface-100 truncate">
-                                  {displayName}
-                                </span>
-                                {isAdmin && (
-                                  <span className="px-2 py-0.5 text-xs font-medium bg-primary-500/20 text-primary-400 rounded-full">
-                                    admin
+                          <div className="flex flex-col sm:flex-row sm:items-center gap-3 p-3">
+                            <div className="flex items-center gap-3 flex-1 min-w-0">
+                              <Avatar user={member} size="lg" />
+                              <div className="flex-1 min-w-0">
+                                <div className="flex items-center gap-2">
+                                  <span className="font-medium text-surface-100 truncate">
+                                    {displayName}
                                   </span>
+                                  {isAdmin && (
+                                    <span className="px-2 py-0.5 text-xs font-medium bg-primary-500/20 text-primary-400 rounded-full">
+                                      admin
+                                    </span>
+                                  )}
+                                  {isGuest && (
+                                    <span className="px-2 py-0.5 text-xs font-medium bg-sky-500/20 text-sky-200 rounded-full">
+                                      guest
+                                    </span>
+                                  )}
+                                </div>
+                                {member.jobTitle && (
+                                  <p className="text-sm text-surface-300 truncate">{member.jobTitle}</p>
                                 )}
-                                {isGuest && (
-                                  <span className="px-2 py-0.5 text-xs font-medium bg-sky-500/20 text-sky-200 rounded-full">
-                                    guest
-                                  </span>
-                                )}
+                                <p className="text-sm text-surface-400 truncate">{member.email}</p>
                               </div>
-                              {member.jobTitle && (
-                                <p className="text-sm text-surface-300 truncate">{member.jobTitle}</p>
-                              )}
-                              <p className="text-sm text-surface-400 truncate">{member.email}</p>
                             </div>
                             {/* Identity badges */}
-                            <div className="flex items-center gap-1.5">
+                            <div className="flex items-center gap-1.5 flex-wrap sm:flex-nowrap">
                               {isGuest && (
                                 <button
                                   type="button"
@@ -1118,15 +1124,15 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
                                   {identities.map((identity) => (
                                     <div
                                       key={identity.id}
-                                      className="flex items-center gap-2 text-xs px-2 py-1.5 rounded bg-surface-700/30"
-                                    >
-                                      <span className={`px-1.5 py-0.5 font-medium rounded ${sourceColor(identity.source)}`}>
+                                    className="flex flex-col sm:flex-row sm:items-center gap-1.5 sm:gap-2 text-xs px-2 py-1.5 rounded bg-surface-700/30"
+                                  >
+                                      <span className={`px-1.5 py-0.5 font-medium rounded w-fit ${sourceColor(identity.source)}`}>
                                         {sourceLabel(identity.source)}
                                       </span>
                                       <span className="text-surface-300 truncate">
                                         {identity.externalEmail ?? identity.externalUserid ?? 'Unknown'}
                                       </span>
-                                      <div className="ml-auto flex items-center gap-2 whitespace-nowrap">
+                                      <div className="sm:ml-auto flex items-center gap-2 whitespace-nowrap">
                                         <span className="text-surface-500">
                                           {identity.matchSource.replace(/_/g, ' ')}
                                         </span>
@@ -1171,9 +1177,9 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
                                         key={ui.id}
                                         onClick={() => void handleLinkIdentity(member.id, ui.id)}
                                         disabled={linkIdentityMutation.isPending || unlinkIdentityMutation.isPending}
-                                        className="flex items-center gap-2 text-xs px-2 py-1.5 rounded bg-surface-700/20 hover:bg-surface-700/50 transition-colors w-full text-left disabled:opacity-50"
+                                        className="flex flex-wrap sm:flex-nowrap items-center gap-2 text-xs px-2 py-1.5 rounded bg-surface-700/20 hover:bg-surface-700/50 transition-colors w-full text-left disabled:opacity-50"
                                       >
-                                        <span className={`px-1.5 py-0.5 font-medium rounded ${sourceColor(ui.source)}`}>
+                                        <span className={`px-1.5 py-0.5 font-medium rounded w-fit ${sourceColor(ui.source)}`}>
                                           {sourceLabel(ui.source)}
                                         </span>
                                         <span className="text-surface-400 truncate">
