@@ -415,6 +415,7 @@ class AppsConnector(BaseConnector):
         conversation_id: str | None = data.get("conversation_id")
         user_uuid: UUID | None = None
         conversation_uuid: UUID | None = None
+        visibility: str = "team"
         owner_override_raw: Any = data.get(" app created by")
         owner_override_id: str | None = None
         if owner_override_raw is not None:
@@ -470,20 +471,31 @@ class AppsConnector(BaseConnector):
                             Conversation.user_id,
                             Conversation.source,
                             Conversation.source_user_id,
+                            Conversation.scope,
                         ).where(
                             Conversation.id == conversation_uuid,
                         )
                     )
-                    conversation_record: tuple[UUID | None, str | None, str | None] | None = row.one_or_none()
+                    conversation_record: tuple[UUID | None, str | None, str | None, str | None] | None = row.one_or_none()
                     conversation_user_id: UUID | None = None
                     conversation_source: str | None = None
                     conversation_source_user_id: str | None = None
+                    conversation_scope: str | None = None
                     if conversation_record is not None:
                         (
                             conversation_user_id,
                             conversation_source,
                             conversation_source_user_id,
+                            conversation_scope,
                         ) = conversation_record
+                    normalized_scope: str = (conversation_scope or "").strip().lower()
+                    if normalized_scope == "private":
+                        visibility = "private"
+                        logger.info(
+                            "[AppsConnector] Inherited private visibility from conversation scope: conversation_id=%s scope=%s",
+                            conversation_id,
+                            conversation_scope,
+                        )
                     if conversation_user_id is not None:
                         user_uuid = conversation_user_id
                         logger.info(
@@ -576,6 +588,7 @@ class AppsConnector(BaseConnector):
                 queries=queries,
                 frontend_code=frontend_code,
                 frontend_code_compiled=compiled_code,
+                visibility=visibility,
                 conversation_id=conversation_uuid,
                 message_id=msg_id_str,
             )

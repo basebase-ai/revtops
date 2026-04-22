@@ -119,7 +119,7 @@ def _resolve_conversation_scope(
         return "shared"
 
     if channel_type in {"mpim", "groupchat"}:
-        return "shared"
+        return "private"
 
     identity_known: bool = bool(revtops_user_id or message.external_user_id)
     return "private" if identity_known else "shared"

@@ -17,9 +17,9 @@ def test_resolve_conversation_scope_private_for_known_im_direct_message() -> Non
     assert _resolve_conversation_scope(message, revtops_user_id=None) == "private"
 
 
-def test_resolve_conversation_scope_shared_for_mpim_direct_message() -> None:
+def test_resolve_conversation_scope_private_for_mpim_direct_message() -> None:
     message = _build_message(MessageType.DIRECT, channel_type="mpim", external_user_id="U123")
-    assert _resolve_conversation_scope(message, revtops_user_id="11111111-1111-1111-1111-111111111111") == "shared"
+    assert _resolve_conversation_scope(message, revtops_user_id="11111111-1111-1111-1111-111111111111") == "private"
 
 
 def test_resolve_conversation_scope_shared_for_mentions() -> None:
@@ -49,6 +49,6 @@ def test_resolve_conversation_scope_private_for_mentions_in_private_slack_channe
     assert _resolve_conversation_scope(message, revtops_user_id="11111111-1111-1111-1111-111111111111") == "private"
 
 
-def test_resolve_conversation_scope_shared_for_teams_groupchat_direct_message() -> None:
+def test_resolve_conversation_scope_private_for_teams_groupchat_direct_message() -> None:
     message = _build_message(MessageType.DIRECT, channel_type="groupChat", external_user_id="U123")
-    assert _resolve_conversation_scope(message, revtops_user_id="11111111-1111-1111-1111-111111111111") == "shared"
+    assert _resolve_conversation_scope(message, revtops_user_id="11111111-1111-1111-1111-111111111111") == "private"
