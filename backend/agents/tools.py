@@ -1101,6 +1101,13 @@ async def _write_on_connector(
 
     try:
         result = await instance.write(operation, data)
+        _log_common_connector_sink_failure(
+            dispatch_type="write",
+            connector=connector,
+            operation=operation,
+            payload=data,
+            result=result,
+        )
         await record_outcome(change_id, organization_id, result)
         return _attach_cross_user_connector_warning(result, cross_user_warning)
     except Exception as exc:
@@ -1200,6 +1207,13 @@ async def _run_on_connector(
 
     try:
         result = await instance.execute_action(action, action_params)
+        _log_common_connector_sink_failure(
+            dispatch_type="action",
+            connector=connector,
+            operation=action,
+            payload=action_params,
+            result=result,
+        )
         await record_outcome(change_id, organization_id, result)
         return _attach_cross_user_connector_warning(result, cross_user_warning)
     except Exception as exc:
@@ -1209,6 +1223,50 @@ async def _run_on_connector(
             {"error": f"Action {connector}.{action} failed: {exc}"},
             connector, organization_id,
         )
+
+
+def _log_common_connector_sink_failure(
+    *,
+    dispatch_type: str,
+    connector: str,
+    operation: str,
+    payload: dict[str, Any],
+    result: Any,
+) -> None:
+    """Emit structured logs when sink-style connector calls fail without raising."""
+    if not isinstance(result, dict):
+        return
+
+    error_raw: Any = result.get("error")
+    if not error_raw:
+        return
+
+    error_text: str = str(error_raw)
+    error_text_lower = error_text.lower()
+
+    failure_kind = "connector_error"
+    if any(token in error_text_lower for token in ("auth", "oauth", "token", "unauthorized", "forbidden", "permission", "scope")):
+        failure_kind = "auth_or_permission"
+    elif any(token in error_text_lower for token in ("rate limit", "429", "too many requests", "throttl")):
+        failure_kind = "rate_limited"
+    elif any(token in error_text_lower for token in ("timeout", "timed out", "deadline")):
+        failure_kind = "timeout"
+    elif any(token in error_text_lower for token in ("not found", "404")):
+        failure_kind = "not_found"
+    elif any(token in error_text_lower for token in ("invalid", "validation", "bad request", "400", "unprocessable", "422")):
+        failure_kind = "invalid_input"
+    elif any(token in error_text_lower for token in ("conflict", "409", "already exists", "duplicate")):
+        failure_kind = "conflict"
+
+    logger.warning(
+        "[Tools] connector sink returned failure dispatch_type=%s connector=%s operation=%s failure_kind=%s error=%s payload_keys=%s",
+        dispatch_type,
+        connector,
+        operation,
+        failure_kind,
+        error_text,
+        sorted(payload.keys()),
+    )
 
 
 # =============================================================================
