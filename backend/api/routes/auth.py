@@ -2738,7 +2738,7 @@ async def update_guest_user(
     if not user_uuid:
         raise HTTPException(status_code=401, detail="Not authenticated")
 
-    async with get_session() as session:
+    async with get_session(organization_id=org_id) as session:
         requesting_user = await session.get(User, user_uuid)
         if not await _can_administer_org(session, requesting_user, org_uuid):
             raise HTTPException(status_code=403, detail="Org admin or global_admin required for this organization")

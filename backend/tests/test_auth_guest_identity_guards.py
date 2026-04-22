@@ -106,3 +106,55 @@ def test_unlink_identity_rejects_guest_mapping(monkeypatch):
     assert exc.value.status_code == 403
     assert mapping.user_id == guest_user_id
     assert not fake_session.committed
+
+
+def test_update_guest_user_scopes_session_to_org(monkeypatch):
+    org_id = UUID("12121212-1212-1212-1212-121212121212")
+    requester_id = UUID("34343434-3434-3434-3434-343434343434")
+    guest_user_id = UUID("56565656-5656-5656-5656-565656565656")
+    captured: dict[str, str] = {}
+
+    requester = SimpleNamespace(id=requester_id, is_guest=False)
+    org = SimpleNamespace(id=org_id, guest_user_id=guest_user_id, guest_user_enabled=False)
+    guest_user = SimpleNamespace(id=guest_user_id, guest_organization_id=org_id, is_guest=True)
+
+    class _GuestToggleSession:
+        def __init__(self):
+            self.committed = False
+
+        async def get(self, model, model_id):
+            if model is auth.User:
+                if model_id == requester_id:
+                    return requester
+                if model_id == guest_user_id:
+                    return guest_user
+            if model is auth.Organization and model_id == org_id:
+                return org
+            return None
+
+        async def commit(self):
+            self.committed = True
+
+    guest_toggle_session = _GuestToggleSession()
+
+    def _fake_get_session(**kwargs):
+        captured["organization_id"] = kwargs.get("organization_id")
+        return _FakeSessionContext(guest_toggle_session)
+
+    async def _allow_admin(_session, _user, _org_uuid):
+        return True
+
+    monkeypatch.setattr(auth, "get_session", _fake_get_session)
+    monkeypatch.setattr(auth, "_can_administer_org", _allow_admin)
+
+    result = asyncio.run(
+        auth.update_guest_user(
+            org_id=str(org_id),
+            request=auth.UpdateGuestUserRequest(enabled=True),
+            user_id=str(requester_id),
+        )
+    )
+
+    assert captured["organization_id"] == str(org_id)
+    assert guest_toggle_session.committed is True
+    assert result == {"enabled": True}
