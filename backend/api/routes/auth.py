@@ -3082,6 +3082,20 @@ async def confirm_integration(
                         "[Confirm] Could not extract Slack team_id from Nango connection for connection_id=%s",
                         nango_connection_id,
                     )
+            # Carry authed_user from the raw OAuth response into metadata so
+            # upsert_slack_user_mappings_from_metadata can auto-map the
+            # installer's Slack identity to their Basebase account.
+            if "authed_user" not in connection_metadata:
+                _authed_raw: dict[str, Any] = (
+                    (connection.get("credentials") or {}).get("raw") or {}
+                ).get("authed_user") or {}
+                if isinstance(_authed_raw, dict) and _authed_raw.get("id"):
+                    connection_metadata["authed_user"] = _authed_raw
+                    logger.info(
+                        "[Confirm] Extracted Slack authed_user.id=%s from credentials.raw for connection_id=%s",
+                        _authed_raw["id"],
+                        nango_connection_id,
+                    )
         # Prevent an org from connecting two different Slack workspaces.
         if request.provider == "slack":
             _incoming_team_id: str | None = (connection_metadata or {}).get("team_id")
@@ -3756,6 +3770,8 @@ async def slack_oauth_callback(request: Request) -> RedirectResponse:
     team_info: dict[str, Any] = token_data.get("team", {})
     team_id: str = str(team_info.get("id", "")).strip()
     team_name: str = str(team_info.get("name", "")).strip()
+    authed_user_info: dict[str, Any] = token_data.get("authed_user") or {}
+    authed_user_id: str = str(authed_user_info.get("id") or "").strip()
 
     if access_token and team_id:
         from services.slack_bot_install import upsert_bot_install
@@ -3767,8 +3783,8 @@ async def slack_oauth_callback(request: Request) -> RedirectResponse:
                 access_token=access_token,
             )
             logger.info(
-                "[slack_direct_install] Stored bot token for team_id=%s team_name=%s (pending org link)",
-                team_id, team_name,
+                "[slack_direct_install] Stored bot token for team_id=%s team_name=%s authed_user=%s (pending org link)",
+                team_id, team_name, authed_user_id,
             )
         except Exception as exc:
             logger.error(
@@ -3776,8 +3792,11 @@ async def slack_oauth_callback(request: Request) -> RedirectResponse:
                 team_id, exc,
             )
 
+    redirect_params: str = f"slack_install=success&team_id={team_id}&team_name={team_name}"
+    if authed_user_id:
+        redirect_params += f"&authed_user_id={authed_user_id}"
     return RedirectResponse(
-        url=f"{frontend_url}/?slack_install=success&team_id={team_id}&team_name={team_name}",
+        url=f"{frontend_url}/?{redirect_params}",
         status_code=302,
     )
 
