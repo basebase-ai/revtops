@@ -206,14 +206,20 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
   const [resendingMemberId, setResendingMemberId] = useState<string | null>(null);
   const [revokingInviteMemberId, setRevokingInviteMemberId] = useState<string | null>(null);
   const [menuOpenMemberId, setMenuOpenMemberId] = useState<string | null>(null);
+  const previousOrganizationIdRef = useRef<string>(organization.id);
 
   useEffect(() => {
+    const organizationChanged = previousOrganizationIdRef.current !== organization.id;
+    previousOrganizationIdRef.current = organization.id;
+
     setOrgName(organization.name);
     setLogoUrl(organization.logoUrl);
     setLlmPrimaryModel(organization.llmPrimaryModel ?? '');
     setLlmCheapModel(organization.llmCheapModel ?? '');
     setLlmWorkflowModel(organization.llmWorkflowModel ?? '');
-    setModelFamilyWarning(null);
+    if (organizationChanged) {
+      setModelFamilyWarning(null);
+    }
     setSettingsSaved(false);
     setExpandedMemberId(null);
     setMenuOpenMemberId(null);
