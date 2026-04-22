@@ -220,6 +220,7 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
     currentAppId,
     currentArtifactId,
     recentChats,
+    orgSettingsTab,
   } = useAppStore(
     useShallow((state) => ({
       user: state.user,
@@ -231,6 +232,7 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
       currentAppId: state.currentAppId,
       currentArtifactId: state.currentArtifactId,
       recentChats: state.recentChats,
+      orgSettingsTab: state.orgSettingsTab,
     }))
   );
 
@@ -243,6 +245,7 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
   // Zustand: Get integrations for connected count badge
   const integrations = useIntegrations();
   const fetchIntegrations = useAppStore((state) => state.fetchIntegrations);
+  const setOrgSettingsTab = useAppStore((state) => state.setOrgSettingsTab);
   const connectedIntegrationsCount = integrations.filter((i) => i.isActive).length;
   
   // Fetch integrations on mount and when org changes
@@ -514,6 +517,21 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
         setAdminPanelTab(adminTabFromPathSegment(segment));
         return;
       }
+      const settingsSubTabMatch = subPath.match(/^settings(?:\/([a-z-]+))?$/i);
+      if (settingsSubTabMatch) {
+        const segment = (settingsSubTabMatch[1] ?? '').toLowerCase();
+        if (segment === 'members' || segment === 'team') {
+          setOrgSettingsTab('team');
+        } else if (segment === 'billing') {
+          setOrgSettingsTab('billing');
+        } else {
+          setOrgSettingsTab('settings');
+        }
+        setCurrentChatId(null);
+        setCurrentView("org-settings");
+        return;
+      }
+
       const viewMap: Record<string, typeof currentView> = {
         chats: "chats",
         connectors: "data-sources",
@@ -524,7 +542,6 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
         documents: "documents",
         changes: "pending-changes",
         activity: "activity-log",
-        settings: "org-settings",
       };
       const view = viewMap[subPath];
       if (view) {
@@ -562,6 +579,21 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
       return;
     }
 
+    const legacySettingsSubTabMatch = path.match(/^\/settings(?:\/([a-z-]+))?$/i);
+    if (legacySettingsSubTabMatch) {
+      const segment: string = (legacySettingsSubTabMatch[1] ?? '').toLowerCase();
+      if (segment === 'members' || segment === 'team') {
+        setOrgSettingsTab('team');
+      } else if (segment === 'billing') {
+        setOrgSettingsTab('billing');
+      } else {
+        setOrgSettingsTab('settings');
+      }
+      setCurrentChatId(null);
+      setCurrentView("org-settings");
+      return;
+    }
+
     const viewPaths: Record<string, typeof currentView> = {
       "/": "home",
       "/chat": "chat",
@@ -574,7 +606,6 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
       "/documents": "documents",
       "/changes": "pending-changes",
       "/activity": "activity-log",
-      "/settings": "org-settings",
     };
     const matchedView = viewPaths[path];
     if (matchedView) {
@@ -589,6 +620,7 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
     setCurrentAppId,
     setCurrentView,
     setAdminPanelTab,
+    setOrgSettingsTab,
     openArtifact,
     fetchUserOrganizations,
     switchActiveOrganization,
@@ -668,7 +700,7 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
           admin: "/admin",
           "pending-changes": "/changes",
           "activity-log": "/activity",
-          "org-settings": "/settings",
+          "org-settings": orgSettingsTab === "team" ? "/settings/members" : orgSettingsTab === "billing" ? "/settings/billing" : "/settings",
         };
         const base: string = viewPaths[currentView];
         newPath = prefix ? `${prefix}${base === "/" ? "" : base}` : base;
@@ -678,7 +710,7 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
     if (window.location.pathname !== newPath) {
       window.history.pushState({}, "", newPath);
     }
-  }, [currentChatId, currentAppId, currentArtifactId, currentView, adminPanelTab, urlInitialized, orgHandle, organization?.id, organization?.handle, organizations, orgAccessError]);
+  }, [currentChatId, currentAppId, currentArtifactId, currentView, adminPanelTab, orgSettingsTab, urlInitialized, orgHandle, organization?.id, organization?.handle, organizations, orgAccessError]);
   
   // Panels
   const [showOrgPanel, setShowOrgPanel] = useState(false);
@@ -2028,7 +2060,7 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
             key={`org-settings-page-${organization.id}`}
             organization={organization}
             currentUser={user}
-            initialTab="settings"
+            initialTab={orgSettingsTab}
             onClose={() => setCurrentView('home')}
             mode="page"
           />

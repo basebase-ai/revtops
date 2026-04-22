@@ -37,6 +37,8 @@ export interface UIState {
   lastArtifactUpdateId: string | null;
   /** Active section in Global Admin (sidebar + main panel). */
   adminPanelTab: AdminPanelTab;
+  /** Active section in organization settings page (/settings). */
+  orgSettingsTab: "team" | "billing" | "settings";
   /** Set when org-prefixed URL targets an org the user does not belong to. */
   orgAccessError: OrgAccessErrorState | null;
 
@@ -55,6 +57,7 @@ export interface UIState {
   togglePinChat: (id: string) => void;
   setTheme: (theme: UITheme) => void;
   setAdminPanelTab: (tab: AdminPanelTab) => void;
+  setOrgSettingsTab: (tab: "team" | "billing" | "settings") => void;
   clearOrgAccessError: () => void;
 }
 
@@ -76,6 +79,7 @@ export const useUIStore = create<UIState>()(
       lastArtifactUpdateId: null,
       documentSearchTerm: null,
       adminPanelTab: "dashboard",
+      orgSettingsTab: "settings",
       orgAccessError: null,
 
       // Actions
@@ -124,6 +128,7 @@ export const useUIStore = create<UIState>()(
       },
       setTheme: (theme) => set({ theme }),
       setAdminPanelTab: (adminPanelTab) => set({ adminPanelTab }),
+      setOrgSettingsTab: (orgSettingsTab) => set({ orgSettingsTab }),
       clearOrgAccessError: () => set({ orgAccessError: null }),
     }),
     {
