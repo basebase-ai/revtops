@@ -25,6 +25,7 @@ class _FakeSession:
         *,
         message_user_id: UUID | None,
         conversation_user_id: UUID | None,
+        conversation_scope: str | None = None,
         org_handle: str | None = None,
         conversation_source: str | None = None,
         conversation_source_user_id: str | None = None,
@@ -33,6 +34,7 @@ class _FakeSession:
     ):
         self.message_user_id = message_user_id
         self.conversation_user_id = conversation_user_id
+        self.conversation_scope = conversation_scope
         self.org_handle = org_handle
         self.conversation_source = conversation_source
         self.conversation_source_user_id = conversation_source_user_id
@@ -52,6 +54,7 @@ class _FakeSession:
                     self.conversation_user_id,
                     self.conversation_source,
                     self.conversation_source_user_id,
+                    self.conversation_scope,
                 )
             )
         if "user_mappings_for_identity" in q:
@@ -210,3 +213,83 @@ def test_create_returns_org_handle_scoped_uri_when_handle_present(monkeypatch):
 
     assert result["status"] == "success"
     assert result["uri"].startswith("/acme/artifacts/")
+
+
+def test_create_sets_private_visibility_for_private_conversation(monkeypatch):
+    org_id = "00000000-0000-0000-0000-000000000010"
+    fake_session = _FakeSession(
+        message_user_id=None,
+        conversation_user_id=UUID("00000000-0000-0000-0000-000000000013"),
+        conversation_scope="private",
+    )
+
+    @asynccontextmanager
+    async def _fake_get_session(*_args, **_kwargs):
+        yield fake_session
+
+    async def _fake_warm(*_args, **_kwargs):
+        return None
+
+    async def _fake_alternate(*_args, **_kwargs):
+        return []
+
+    monkeypatch.setattr("connectors.artifacts.get_session", _fake_get_session)
+    monkeypatch.setattr("connectors.artifacts.warm_public_preview_cache", _fake_warm)
+    monkeypatch.setattr("connectors.artifacts.get_alternate_slack_user_ids_for_identity", _fake_alternate)
+
+    connector = ArtifactConnector(organization_id=org_id, user_id=None)
+
+    result = asyncio.run(
+        connector._create(
+            {
+                "title": "Private artifact",
+                "filename": "artifact.md",
+                "content_type": "markdown",
+                "content": "hello",
+                "conversation_id": "00000000-0000-0000-0000-000000000015",
+            }
+        )
+    )
+
+    assert result["status"] == "success"
+    assert fake_session.added[0].visibility == "private"
+
+
+def test_create_reverts_private_visibility_without_owner(monkeypatch):
+    org_id = "00000000-0000-0000-0000-000000000010"
+    fake_session = _FakeSession(
+        message_user_id=None,
+        conversation_user_id=None,
+        conversation_scope="private",
+    )
+
+    @asynccontextmanager
+    async def _fake_get_session(*_args, **_kwargs):
+        yield fake_session
+
+    async def _fake_warm(*_args, **_kwargs):
+        return None
+
+    async def _fake_alternate(*_args, **_kwargs):
+        return []
+
+    monkeypatch.setattr("connectors.artifacts.get_session", _fake_get_session)
+    monkeypatch.setattr("connectors.artifacts.warm_public_preview_cache", _fake_warm)
+    monkeypatch.setattr("connectors.artifacts.get_alternate_slack_user_ids_for_identity", _fake_alternate)
+
+    connector = ArtifactConnector(organization_id=org_id, user_id=None)
+
+    result = asyncio.run(
+        connector._create(
+            {
+                "title": "Ownerless private artifact",
+                "filename": "artifact.md",
+                "content_type": "markdown",
+                "content": "hello",
+                "conversation_id": "00000000-0000-0000-0000-000000000015",
+            }
+        )
+    )
+
+    assert result["status"] == "success"
+    assert fake_session.added[0].visibility == "team"
