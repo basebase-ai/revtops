@@ -51,6 +51,60 @@ def _parse_sync_since_iso(iso_str: str | None) -> datetime | None:
     return parsed
 
 
+def _classify_sync_failure(error_message: str) -> tuple[str, int]:
+    """
+    Classify common connector sync failure modes for clearer logging.
+
+    Returns:
+        Tuple of (failure_case, suggested_log_level)
+    """
+    normalized = error_message.lower()
+    if any(
+        snippet in normalized
+        for snippet in (
+            "connection not found",
+            "invalid_auth",
+            "token_revoked",
+            "auth revoked",
+            "account_inactive",
+            "not_authed",
+            "revoked",
+            "unauthorized",
+            "forbidden",
+            "401",
+            "403",
+        )
+    ):
+        return ("auth_or_connection_revoked", logging.WARNING)
+    if any(
+        snippet in normalized
+        for snippet in (
+            "rate limit",
+            "rate_limit",
+            "too many requests",
+            "429",
+        )
+    ):
+        return ("upstream_rate_limited", logging.WARNING)
+    if any(
+        snippet in normalized
+        for snippet in (
+            "timed out",
+            "timeout",
+            "temporarily unavailable",
+            "service unavailable",
+            "bad gateway",
+            "gateway timeout",
+            "502",
+            "503",
+            "504",
+            "connection reset",
+        )
+    ):
+        return ("upstream_transient_error", logging.WARNING)
+    return ("unexpected_failure", logging.ERROR)
+
+
 async def _clear_last_errors_for_integration(
     organization_id: str,
     provider: str,
@@ -218,7 +272,17 @@ async def _sync_integration(
 
     except Exception as e:
         error_msg = str(e)
-        logger.error(f"Sync failed for {provider} in org {organization_id}: {error_msg}")
+        failure_case, log_level = _classify_sync_failure(error_msg)
+        logger.log(
+            log_level,
+            "Connector sync failed provider=%s org=%s user=%s case=%s error=%s",
+            provider,
+            organization_id,
+            user_id,
+            failure_case,
+            error_msg,
+            exc_info=True,
+        )
 
         # Record error in database and clear in-progress flag
         try:
