@@ -684,6 +684,13 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
   const [showOrgPanel, setShowOrgPanel] = useState(false);
   const [showProfilePanel, setShowProfilePanel] = useState(false);
   const [orgPanelTab, setOrgPanelTab] = useState<'team' | 'billing' | 'settings'>('team');
+  const orgSettingsInitialTab: 'team' | 'billing' | 'settings' = (() => {
+    if (typeof window === 'undefined') return 'settings';
+    const tab = new URLSearchParams(window.location.search).get('tab')?.toLowerCase();
+    if (tab === 'team' || tab === 'members') return 'team';
+    if (tab === 'billing') return 'billing';
+    return 'settings';
+  })();
 
   // CRM approval results (shared across chats) - use state to trigger re-renders
   const [crmApprovalResults, setCrmApprovalResults] = useState<Map<string, unknown>>(() => new Map());
@@ -2028,7 +2035,7 @@ export function AppLayout({ onLogout, onCreateNewOrg }: AppLayoutProps): JSX.Ele
             key={`org-settings-page-${organization.id}`}
             organization={organization}
             currentUser={user}
-            initialTab="settings"
+            initialTab={orgSettingsInitialTab}
             onClose={() => setCurrentView('home')}
             mode="page"
           />

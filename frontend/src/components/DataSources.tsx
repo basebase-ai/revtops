@@ -259,6 +259,17 @@ export function DataSources(): JSX.Element {
   // Get user/org from Zustand (auth state)
   const { user, organization, organizations } = useAppStore();
   const setCurrentView = useAppStore((state) => state.setCurrentView);
+
+  const openTeamMembersPanel = useCallback((): void => {
+    const orgHandle =
+      organization?.handle ??
+      (organization?.id
+        ? organizations.find((orgMembership) => orgMembership.id === organization.id)?.handle ?? null
+        : null);
+    const settingsPath = orgHandle ? `/${orgHandle}/settings?tab=members` : '/settings?tab=members';
+    window.history.pushState({}, '', settingsPath);
+    setCurrentView('org-settings');
+  }, [organization?.handle, organization?.id, organizations, setCurrentView]);
   const fetchUserOrganizations = useAppStore((state) => state.fetchUserOrganizations);
   
 
@@ -1723,7 +1734,7 @@ export function DataSources(): JSX.Element {
             If you want to map users other than yourself, admins can manage identity mappings in the{' '}
             <button
               type="button"
-              onClick={() => setCurrentView('org-settings')}
+              onClick={openTeamMembersPanel}
               className="text-primary-400 hover:text-primary-300 underline"
             >
               Team UI
