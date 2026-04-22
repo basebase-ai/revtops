@@ -117,3 +117,20 @@ async def test_execute_action_rejects_outbound_network_command_before_sandbox_us
             "Blocked command pattern: curl."
         )
     }
+
+
+@pytest.mark.asyncio
+async def test_execute_action_requires_current_basebase_user_context() -> None:
+    connector = CodeSandboxConnector(organization_id="org_123")
+
+    result = await connector.execute_action(
+        "execute_command",
+        {"command": "python3 -c 'print(1)'", "conversation_id": "conv_123"},
+    )
+
+    assert result == {
+        "error": (
+            "Code sandbox execution requires an authenticated Basebase user. "
+            "Unable to resolve current user context."
+        )
+    }

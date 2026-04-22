@@ -57,6 +57,7 @@ _SUDO_BLOCK_MESSAGE: str = (
 )
 
 _MAX_EGRESS_BYTES: int = 1_000_000
+_BASEBASE_USER_ID_ENV_KEY: str = "BASEBASE_USER_ID"
 
 
 def _compile_command_invocation_pattern(command: str) -> re.Pattern[str]:
@@ -121,6 +122,7 @@ _DB_USER: str = os.environ["DB_USER"]
 _DB_PASSWORD: str = os.environ["DB_PASSWORD"]
 _DB_SSLMODE: str = os.environ.get("DB_SSLMODE", "prefer")
 _ORG_ID: str = os.environ["ORG_ID"]
+_USER_ID: str = os.environ["BASEBASE_USER_ID"]
 
 def get_connection() -> psycopg2.extensions.connection:
     conn: psycopg2.extensions.connection = psycopg2.connect(
@@ -135,6 +137,7 @@ def get_connection() -> psycopg2.extensions.connection:
     with conn.cursor() as cur:
         cur.execute("SET ROLE revtops_app")
         cur.execute("SET app.current_org_id = %s", (_ORG_ID,))
+        cur.execute("SET app.current_user_id = %s", (_USER_ID,))
         cur.execute("SET default_transaction_read_only = on")
     return conn
 """.strip()
@@ -200,12 +203,21 @@ class CodeSandboxConnector(BaseConnector):
         if blocked_reason:
             return {"error": blocked_reason}
 
-        if not settings.E2B_API_KEY:
-            return {"error": "E2B_API_KEY is not configured. Cannot run sandboxed commands."}
-
         conversation_id: str | None = params.get("conversation_id")
         if not conversation_id:
             return {"error": "execute_command requires a conversation context."}
+
+        basebase_user_id: str = str(params.get("basebase_user_id") or "").strip()
+        if not basebase_user_id:
+            return {
+                "error": (
+                    "Code sandbox execution requires an authenticated Basebase user. "
+                    "Unable to resolve current user context."
+                )
+            }
+
+        if not settings.E2B_API_KEY:
+            return {"error": "E2B_API_KEY is not configured. Cannot run sandboxed commands."}
 
         sandbox_id: str | None = await _get_sandbox_id_from_db(conversation_id, self.organization_id)
         if sandbox_id is not None:
@@ -216,7 +228,12 @@ class CodeSandboxConnector(BaseConnector):
 
         if sandbox_id is None:
             try:
-                sandbox_id = await asyncio.to_thread(_create_sandbox_sync, self.organization_id, conversation_id)
+                sandbox_id = await asyncio.to_thread(
+                    _create_sandbox_sync,
+                    self.organization_id,
+                    conversation_id,
+                    basebase_user_id,
+                )
                 await _save_sandbox_id_to_db(conversation_id, self.organization_id, sandbox_id)
             except Exception as exc:
                 logger.error("[Sandbox] Failed to create sandbox: %s", exc)
@@ -285,14 +302,22 @@ async def _save_sandbox_id_to_db(conversation_id: str, organization_id: str, san
 
 # ---- Synchronous E2B helpers (run via asyncio.to_thread) --------------------
 
-def _create_sandbox_sync(organization_id: str, conversation_id: str) -> str:
+def _create_sandbox_sync(organization_id: str, conversation_id: str, basebase_user_id: str) -> str:
     from e2b import Sandbox
 
     sandbox_db_env: dict[str, str] = settings.sandbox_database_connection_env
     sandbox: Sandbox = Sandbox.create(
         timeout=_SANDBOX_TIMEOUT_SECONDS,
-        envs={**sandbox_db_env, "ORG_ID": organization_id},
-        metadata={"conversation_id": conversation_id, "organization_id": organization_id},
+        envs={
+            **sandbox_db_env,
+            "ORG_ID": organization_id,
+            _BASEBASE_USER_ID_ENV_KEY: basebase_user_id,
+        },
+        metadata={
+            "conversation_id": conversation_id,
+            "organization_id": organization_id,
+            "basebase_user_id": basebase_user_id,
+        },
         api_key=settings.E2B_API_KEY,
     )
     sandbox.files.write("/home/user/db.py", _SANDBOX_DB_HELPER_TEMPLATE)

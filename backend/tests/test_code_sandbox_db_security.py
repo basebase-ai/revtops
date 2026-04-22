@@ -29,3 +29,5 @@ def test_sandbox_db_helper_does_not_require_database_uri_env() -> None:
     assert "DATABASE_URL" not in tools_template
     assert "SET default_transaction_read_only = on" in connector_template
     assert "SET default_transaction_read_only = on" in tools_template
+    assert "BASEBASE_USER_ID" in connector_template
+    assert "SET app.current_user_id = %s" in connector_template
