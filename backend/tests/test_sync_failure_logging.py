@@ -40,6 +40,22 @@ def test_classify_sync_failure_common_cases() -> None:
     assert sync_tasks._classify_sync_failure("totally novel failure")[0] == "unexpected_failure"
 
 
+def test_should_retry_sync_failure_only_for_transient_cases() -> None:
+    assert sync_tasks._should_retry_sync_failure("upstream_transient_error") is True
+    assert sync_tasks._should_retry_sync_failure("upstream_rate_limited") is True
+    assert sync_tasks._should_retry_sync_failure("auth_or_connection_revoked") is False
+    assert sync_tasks._should_retry_sync_failure("unexpected_failure") is False
+
+
+def test_compute_sync_retry_delay_seconds_uses_backoff_and_cap(monkeypatch) -> None:
+    monkeypatch.setattr(sync_tasks.random, "randint", lambda _a, _b: 0)
+    assert sync_tasks._compute_sync_retry_delay_seconds(0) == 30
+    assert sync_tasks._compute_sync_retry_delay_seconds(1) == 60
+    assert sync_tasks._compute_sync_retry_delay_seconds(2) == 120
+    # capped to 300 + jitter
+    assert sync_tasks._compute_sync_retry_delay_seconds(10) == 300
+
+
 def test_sync_failure_logging_includes_case_and_context(monkeypatch, caplog) -> None:
     emitted_events: list[tuple[str, str, dict[str, Any]]] = []
 

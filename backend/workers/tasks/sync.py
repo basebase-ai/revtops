@@ -15,6 +15,7 @@ if str(_backend_dir) not in sys.path:
     sys.path.insert(0, str(_backend_dir))
 
 import logging
+import random
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import UUID
@@ -32,6 +33,9 @@ PROVIDER_SYNC_INTERVALS: dict[str, timedelta] = {
     "google_drive": timedelta(minutes=30),
 }
 DEFAULT_SYNC_INTERVAL: timedelta = timedelta(hours=1)
+SYNC_TASK_MAX_RETRIES: int = 3
+SYNC_TASK_BASE_RETRY_DELAY_SECONDS: int = 30
+SYNC_TASK_MAX_RETRY_DELAY_SECONDS: int = 300
 
 
 def _parse_sync_since_iso(iso_str: str | None) -> datetime | None:
@@ -103,6 +107,19 @@ def _classify_sync_failure(error_message: str) -> tuple[str, int]:
     ):
         return ("upstream_transient_error", logging.WARNING)
     return ("unexpected_failure", logging.ERROR)
+
+
+def _should_retry_sync_failure(failure_case: str) -> bool:
+    """Whether a failed sync should be retried by Celery."""
+    return failure_case in {"upstream_rate_limited", "upstream_transient_error"}
+
+
+def _compute_sync_retry_delay_seconds(retries_so_far: int) -> int:
+    """Exponential backoff with jitter for sync retries."""
+    exp_delay = SYNC_TASK_BASE_RETRY_DELAY_SECONDS * (2 ** max(retries_so_far, 0))
+    capped_delay = min(exp_delay, SYNC_TASK_MAX_RETRY_DELAY_SECONDS)
+    jitter = random.randint(0, 10)
+    return capped_delay + jitter
 
 
 async def _clear_last_errors_for_integration(
@@ -403,7 +420,11 @@ async def _get_org_integrations(organization_id: str) -> list[dict[str, str | No
         ]
 
 
-@celery_app.task(bind=True, name="workers.tasks.sync.sync_integration")
+@celery_app.task(
+    bind=True,
+    name="workers.tasks.sync.sync_integration",
+    max_retries=SYNC_TASK_MAX_RETRIES,
+)
 def sync_integration(
     self: Any,
     organization_id: str,
@@ -425,7 +446,7 @@ def sync_integration(
     """
     user_label: str = f" user={user_id}" if user_id else ""
     logger.info(f"Task {self.request.id}: Syncing {provider} for org {organization_id}{user_label}")
-    return run_async(
+    result: dict[str, Any] = run_async(
         _sync_integration(
             organization_id,
             provider,
@@ -433,6 +454,27 @@ def sync_integration(
             sync_since_override_iso=sync_since_override_iso,
         )
     )
+    if result.get("status") == "failed":
+        error_message: str = str(result.get("error") or "")
+        failure_case, _ = _classify_sync_failure(error_message)
+        retries_so_far: int = int(getattr(self.request, "retries", 0) or 0)
+        if _should_retry_sync_failure(failure_case):
+            delay_seconds = _compute_sync_retry_delay_seconds(retries_so_far)
+            logger.warning(
+                "Retrying sync task for transient failure task_id=%s provider=%s org=%s user=%s "
+                "failure_case=%s retries_so_far=%s max_retries=%s delay_seconds=%s error=%s",
+                self.request.id,
+                provider,
+                organization_id,
+                user_id,
+                failure_case,
+                retries_so_far,
+                SYNC_TASK_MAX_RETRIES,
+                delay_seconds,
+                error_message,
+            )
+            raise self.retry(countdown=delay_seconds)
+    return result
 
 
 @celery_app.task(bind=True, name="workers.tasks.sync.sync_organization")
