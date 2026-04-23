@@ -937,7 +937,7 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
                     <div className="animate-spin w-6 h-6 border-2 border-primary-500 border-t-transparent rounded-full" />
                   </div>
                 ) : (
-                  <div className="space-y-2">
+                  <div className="space-y-1.5 sm:space-y-2">
                     {sortedMembers.map((member) => {
                       const displayName: string = member.name ?? member.email.split('@')[0] ?? 'Unknown';
                       const isGuest: boolean = member.isGuest;
@@ -959,7 +959,7 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
                       if (isInvited) {
                         return (
                           <div key={member.id} className="rounded-lg bg-surface-800/50 overflow-hidden">
-                            <div className="flex flex-col sm:flex-row sm:items-center gap-3 p-3">
+                            <div className="flex flex-col sm:flex-row sm:items-center gap-2.5 sm:gap-3 p-2.5 sm:p-3">
                               <div className="flex items-center gap-3 flex-1 min-w-0">
                                 <Avatar user={member} size="lg" />
                                 <div className="flex-1 min-w-0">
@@ -970,7 +970,7 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
                                   <p className="text-xs text-amber-400/80 mt-0.5 italic">Invitation pending</p>
                                 </div>
                               </div>
-                              <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap">
+                              <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap sm:flex-nowrap">
                                 <button
                                   type="button"
                                   onClick={() => void handleResendInvite(member.email, member.id)}
@@ -1000,11 +1000,11 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
                       return (
                         <div key={member.id} className="rounded-lg bg-surface-800/50">
                           {/* Member row */}
-                          <div className="flex flex-col gap-2 p-3">
+                          <div className="flex flex-col gap-1.5 sm:gap-2 p-2.5 sm:p-3">
                             <div className="flex items-start gap-3 min-w-0">
                               <Avatar user={member} size="lg" />
                               <div className="flex-1 min-w-0">
-                                <div className="flex items-center gap-2">
+                                <div className="flex items-center gap-1.5 sm:gap-2">
                                   <span className="font-medium text-surface-100 truncate">
                                     {displayName}
                                   </span>
@@ -1081,7 +1081,7 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
                               )}
                             </div>
                             {/* Identity badges */}
-                            <div className="flex items-center gap-1.5 flex-wrap">
+                            <div className="flex items-center gap-1 flex-wrap sm:gap-1.5">
                               {isGuest && (
                                 <button
                                   type="button"
@@ -1117,16 +1117,16 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
 
                           {/* Expanded identity details */}
                           {isExpanded && (
-                            <div className="px-3 pb-3 pt-1 border-t border-surface-700/50">
+                            <div className="px-2.5 sm:px-3 pb-2.5 sm:pb-3 pt-1 border-t border-surface-700/50">
                               <p className="text-xs text-surface-500 mb-2">Linked identities</p>
                               {identities.length > 0 ? (
-                                <div className="space-y-1.5">
+                                <div className="space-y-1 sm:space-y-1.5">
                                   {identities.map((identity) => (
                                     <div
                                       key={identity.id}
-                                    className="flex flex-col gap-1.5 text-xs px-2 py-1.5 rounded bg-surface-700/30"
+                                    className="grid grid-cols-1 sm:grid-cols-[1fr_auto] gap-1 text-xs px-2 py-1.5 rounded bg-surface-700/30"
                                   >
-                                      <div className="flex items-center gap-2 min-w-0">
+                                      <div className="flex items-center gap-1.5 sm:gap-2 min-w-0">
                                         <span className={`px-1.5 py-0.5 font-medium rounded whitespace-nowrap ${sourceColor(identity.source)}`}>
                                           {sourceLabel(identity.source)}
                                         </span>
@@ -1134,7 +1134,7 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
                                           {identity.externalEmail ?? identity.externalUserid ?? 'Unknown'}
                                         </span>
                                       </div>
-                                      <div className="sm:ml-auto flex items-center gap-2 whitespace-nowrap">
+                                      <div className="flex items-center gap-2 whitespace-nowrap sm:justify-end">
                                         <span className="text-surface-500">
                                           {identity.matchSource.replace(/_/g, ' ')}
                                         </span>
@@ -1179,7 +1179,7 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
                                         key={ui.id}
                                         onClick={() => void handleLinkIdentity(member.id, ui.id)}
                                         disabled={linkIdentityMutation.isPending || unlinkIdentityMutation.isPending}
-                                        className="flex flex-wrap sm:flex-nowrap items-center gap-2 text-xs px-2 py-1.5 rounded bg-surface-700/20 hover:bg-surface-700/50 transition-colors w-full text-left disabled:opacity-50"
+                                        className="grid grid-cols-[auto,1fr,auto] sm:flex sm:flex-nowrap items-center gap-1.5 sm:gap-2 text-xs px-2 py-1.5 rounded bg-surface-700/20 hover:bg-surface-700/50 transition-colors w-full text-left disabled:opacity-50"
                                       >
                                         <span className={`px-1.5 py-0.5 font-medium rounded whitespace-nowrap ${sourceColor(ui.source)}`}>
                                           {sourceLabel(ui.source)}
@@ -1187,7 +1187,7 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
                                         <span className="text-surface-400 truncate">
                                           {ui.externalEmail ?? ui.externalUserid}
                                         </span>
-                                        <span className="ml-auto text-primary-400 whitespace-nowrap">+ Link</span>
+                                        <span className="text-primary-400 whitespace-nowrap sm:ml-auto">+ Link</span>
                                       </button>
                                     ))}
                                   </div>
