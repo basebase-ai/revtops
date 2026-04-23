@@ -6,6 +6,7 @@ The sandbox persists across calls within a conversation.
 """
 
 import asyncio
+import json
 import logging
 import re
 from typing import Any
@@ -126,10 +127,17 @@ _ORG_ID: str = os.environ["ORG_ID"]
 _USER_ID: str = os.environ["BASEBASE_USER_ID"]
 _ALLOWED_USER_IDS_RAW: str = os.environ.get("BASEBASE_ALLOWED_USER_IDS", "")
 _ALLOWED_USER_IDS: set[str] = {uid.strip() for uid in _ALLOWED_USER_IDS_RAW.split(",") if uid.strip()}
+_EXPECTED_USER_ID: str = __EXPECTED_USER_ID__
+_EXPECTED_ALLOWED_USER_IDS: set[str] = set(__EXPECTED_ALLOWED_USER_IDS__)
 
 def get_connection() -> psycopg2.extensions.connection:
+    if _USER_ID != _EXPECTED_USER_ID:
+        raise PermissionError("BASEBASE_USER_ID does not match the sandbox caller context")
+
     if _ALLOWED_USER_IDS and _USER_ID not in _ALLOWED_USER_IDS:
         raise PermissionError("BASEBASE_USER_ID is not in BASEBASE_ALLOWED_USER_IDS")
+    if _EXPECTED_ALLOWED_USER_IDS and _USER_ID not in _EXPECTED_ALLOWED_USER_IDS:
+        raise PermissionError("BASEBASE_USER_ID is not in the expected conversation allow-list")
 
     conn: psycopg2.extensions.connection = psycopg2.connect(
         host=_DB_HOST,
@@ -147,6 +155,15 @@ def get_connection() -> psycopg2.extensions.connection:
         cur.execute("SET default_transaction_read_only = on")
     return conn
 """.strip()
+
+
+def _build_sandbox_db_helper_template(basebase_user_id: str, allowed_user_ids_csv: str) -> str:
+    expected_allowed_user_ids: list[str] = [uid for uid in allowed_user_ids_csv.split(",") if uid]
+    return (
+        _SANDBOX_DB_HELPER_TEMPLATE
+        .replace("__EXPECTED_USER_ID__", json.dumps(basebase_user_id))
+        .replace("__EXPECTED_ALLOWED_USER_IDS__", json.dumps(expected_allowed_user_ids))
+    )
 
 
 class CodeSandboxConnector(BaseConnector):
@@ -366,7 +383,10 @@ def _create_sandbox_sync(
         },
         api_key=settings.E2B_API_KEY,
     )
-    sandbox.files.write("/home/user/db.py", _SANDBOX_DB_HELPER_TEMPLATE)
+    sandbox.files.write(
+        "/home/user/db.py",
+        _build_sandbox_db_helper_template(basebase_user_id, allowed_user_ids_csv),
+    )
     sandbox.files.make_dir("/home/user/output")
     logger.info("[Sandbox] Created sandbox %s for conversation %s", sandbox.sandbox_id, conversation_id[:8])
     return sandbox.sandbox_id
