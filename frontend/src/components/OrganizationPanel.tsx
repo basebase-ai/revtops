@@ -1000,29 +1000,29 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
                       return (
                         <div key={member.id} className="rounded-lg bg-surface-800/50">
                           {/* Member row */}
-                          <div className="flex flex-col gap-2 p-3">
-                            <div className="flex items-start gap-3 min-w-0">
+                          <div className="flex flex-col gap-1.5 sm:gap-2 p-2.5 sm:p-3">
+                            <div className="flex items-start gap-2.5 sm:gap-3 min-w-0">
                               <Avatar user={member} size="lg" />
                               <div className="flex-1 min-w-0">
-                                <div className="flex items-center gap-2">
+                                <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap">
                                   <span className="font-medium text-surface-100 truncate">
                                     {displayName}
                                   </span>
                                   {isAdmin && (
-                                    <span className="px-2 py-0.5 text-xs font-medium bg-primary-500/20 text-primary-400 rounded-full">
+                                    <span className="px-1.5 sm:px-2 py-0.5 text-[11px] sm:text-xs font-medium bg-primary-500/20 text-primary-400 rounded-full">
                                       admin
                                     </span>
                                   )}
                                   {isGuest && (
-                                    <span className="px-2 py-0.5 text-xs font-medium bg-sky-500/20 text-sky-200 rounded-full">
+                                    <span className="px-1.5 sm:px-2 py-0.5 text-[11px] sm:text-xs font-medium bg-sky-500/20 text-sky-200 rounded-full">
                                       guest
                                     </span>
                                   )}
                                 </div>
                                 {member.jobTitle && (
-                                  <p className="text-sm text-surface-300 truncate">{member.jobTitle}</p>
+                                  <p className="text-xs sm:text-sm text-surface-300 truncate">{member.jobTitle}</p>
                                 )}
-                                <p className="text-sm text-surface-400 truncate">{member.email}</p>
+                                <p className="text-xs sm:text-sm text-surface-400 truncate">{member.email}</p>
                               </div>
                               {/* Three-dots menu */}
                               {!isGuest && (
@@ -1081,7 +1081,7 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
                               )}
                             </div>
                             {/* Identity badges */}
-                            <div className="flex items-center gap-1.5 flex-wrap">
+                            <div className="flex items-center gap-1 flex-wrap">
                               {isGuest && (
                                 <button
                                   type="button"
@@ -1117,14 +1117,14 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
 
                           {/* Expanded identity details */}
                           {isExpanded && (
-                            <div className="px-3 pb-3 pt-1 border-t border-surface-700/50">
-                              <p className="text-xs text-surface-500 mb-2">Linked identities</p>
+                            <div className="px-2.5 sm:px-3 pb-2.5 sm:pb-3 pt-1 border-t border-surface-700/50">
+                              <p className="text-[11px] sm:text-xs text-surface-500 mb-1.5 sm:mb-2">Linked identities</p>
                               {identities.length > 0 ? (
-                                <div className="space-y-1.5">
+                                <div className="space-y-1 sm:space-y-1.5">
                                   {identities.map((identity) => (
                                     <div
                                       key={identity.id}
-                                    className="flex flex-col gap-1.5 text-xs px-2 py-1.5 rounded bg-surface-700/30"
+                                    className="flex flex-col gap-1 text-[11px] sm:text-xs px-2 py-1.5 rounded bg-surface-700/30"
                                   >
                                       <div className="flex items-center gap-2 min-w-0">
                                         <span className={`px-1.5 py-0.5 font-medium rounded whitespace-nowrap ${sourceColor(identity.source)}`}>
@@ -1134,7 +1134,7 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
                                           {identity.externalEmail ?? identity.externalUserid ?? 'Unknown'}
                                         </span>
                                       </div>
-                                      <div className="sm:ml-auto flex items-center gap-2 whitespace-nowrap">
+                                      <div className="sm:ml-auto flex items-center gap-1.5 sm:gap-2 whitespace-nowrap">
                                         <span className="text-surface-500">
                                           {identity.matchSource.replace(/_/g, ' ')}
                                         </span>
@@ -1158,7 +1158,7 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
                               )}
 
                               {isGuest && (
-                                <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-3 mt-3">
+                                <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-2.5 sm:p-3 mt-2.5 sm:mt-3">
                                   <h4 className="text-xs font-medium text-amber-200">Guest user</h4>
                                   <p className="text-xs text-amber-100 mt-1">
                                     The guest user is the identity anonymous Slack entities run as when they are not linked yet.
@@ -1171,20 +1171,20 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
 
                               {/* Show unmapped identities that could be linked to this user */}
                               {unmappedIdentities.length > 0 && (
-                                <div className="mt-3">
-                                  <p className="text-xs text-surface-500 mb-1.5">Link an unmatched account:</p>
+                                <div className="mt-2.5 sm:mt-3">
+                                  <p className="text-[11px] sm:text-xs text-surface-500 mb-1.5">Link an unmatched account:</p>
                                   <div className="space-y-1">
                                     {unmappedIdentities.map((ui) => (
                                       <button
                                         key={ui.id}
                                         onClick={() => void handleLinkIdentity(member.id, ui.id)}
                                         disabled={linkIdentityMutation.isPending || unlinkIdentityMutation.isPending}
-                                        className="flex flex-wrap sm:flex-nowrap items-center gap-2 text-xs px-2 py-1.5 rounded bg-surface-700/20 hover:bg-surface-700/50 transition-colors w-full text-left disabled:opacity-50"
+                                        className="flex flex-wrap sm:flex-nowrap items-center gap-1.5 sm:gap-2 text-[11px] sm:text-xs px-2 py-1.5 rounded bg-surface-700/20 hover:bg-surface-700/50 transition-colors w-full text-left disabled:opacity-50"
                                       >
                                         <span className={`px-1.5 py-0.5 font-medium rounded whitespace-nowrap ${sourceColor(ui.source)}`}>
                                           {sourceLabel(ui.source)}
                                         </span>
-                                        <span className="text-surface-400 truncate">
+                                        <span className="text-surface-400 truncate min-w-0">
                                           {ui.externalEmail ?? ui.externalUserid}
                                         </span>
                                         <span className="ml-auto text-primary-400 whitespace-nowrap">+ Link</span>
