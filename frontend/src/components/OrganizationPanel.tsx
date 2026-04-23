@@ -1004,7 +1004,7 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
                             <div className="flex items-start gap-3 min-w-0">
                               <Avatar user={member} size="lg" />
                               <div className="flex-1 min-w-0">
-                                <div className="flex items-center gap-2">
+                                <div className="flex items-center gap-2 min-w-0">
                                   <span className="font-medium text-surface-100 truncate">
                                     {displayName}
                                   </span>
@@ -1014,9 +1014,27 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
                                     </span>
                                   )}
                                   {isGuest && (
-                                    <span className="px-2 py-0.5 text-xs font-medium bg-sky-500/20 text-sky-200 rounded-full">
-                                      guest
-                                    </span>
+                                    <>
+                                      <span className="px-2 py-0.5 text-xs font-medium bg-sky-500/20 text-sky-200 rounded-full">
+                                        guest
+                                      </span>
+                                      <button
+                                        type="button"
+                                        onClick={() => void handleToggleGuestUser()}
+                                        disabled={updateGuestUserMutation.isPending}
+                                        className={`ml-auto px-2 py-1 text-[10px] font-medium rounded transition-colors disabled:opacity-50 flex-shrink-0 ${
+                                          guestUserEnabled
+                                            ? 'bg-amber-500/20 text-amber-100 hover:bg-amber-500/30'
+                                            : 'bg-surface-700/40 text-surface-200 hover:bg-surface-700/60'
+                                        }`}
+                                      >
+                                        {updateGuestUserMutation.isPending
+                                          ? 'Saving...'
+                                          : guestUserEnabled
+                                            ? 'Enabled'
+                                            : 'Disabled'}
+                                      </button>
+                                    </>
                                   )}
                                 </div>
                                 {member.jobTitle && (
@@ -1082,24 +1100,6 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
                             </div>
                             {/* Identity badges */}
                             <div className="flex items-center gap-1.5 flex-wrap">
-                              {isGuest && (
-                                <button
-                                  type="button"
-                                  onClick={() => void handleToggleGuestUser()}
-                                  disabled={updateGuestUserMutation.isPending}
-                                  className={`px-2 py-1 text-[10px] font-medium rounded transition-colors disabled:opacity-50 ${
-                                    guestUserEnabled
-                                      ? 'bg-amber-500/20 text-amber-100 hover:bg-amber-500/30'
-                                      : 'bg-surface-700/40 text-surface-200 hover:bg-surface-700/60'
-                                  }`}
-                                >
-                                  {updateGuestUserMutation.isPending
-                                    ? 'Saving...'
-                                    : guestUserEnabled
-                                      ? 'Enabled'
-                                      : 'Disabled'}
-                                </button>
-                              )}
                               {identities.length > 0 ? (
                                 [...new Set(identities.map((i) => i.source))].map((src) => (
                                   <span
