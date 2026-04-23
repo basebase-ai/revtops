@@ -1001,8 +1001,8 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
                         <div key={member.id} className="rounded-lg bg-surface-800/50">
                           {/* Member row */}
                           <div className="flex flex-col gap-2 p-3">
-                            <div className="flex items-start gap-3 min-w-0">
-                              <Avatar user={member} size="lg" className="mt-1 flex-shrink-0" />
+                            <div className="flex items-center gap-3 min-w-0">
+                              <Avatar user={member} size="lg" className="flex-shrink-0" />
                               <div className="flex-1 min-w-0">
                                 <div className="flex items-center gap-2 min-w-0">
                                   <span className="font-medium text-surface-100 truncate">
@@ -1044,7 +1044,7 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
                               </div>
                               {/* Three-dots menu */}
                               {!isGuest && (
-                                <div className="relative flex-shrink-0 mt-1">
+                                <div className="relative flex-shrink-0 self-center">
                                   <button
                                     type="button"
                                     onClick={(e) => { e.stopPropagation(); setMenuOpenMemberId(isMenuOpen ? null : member.id); }}
