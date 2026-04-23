@@ -77,6 +77,7 @@ def _format_slack_scope_context(
     slack_thread_ts: str | None,
     slack_channel_name: str | None = None,
     slack_channel_type: str | None = None,
+    source: str | None = None,
 ) -> str:
     """Build prompt guidance for Slack channel/thread query scoping."""
     if not slack_channel_id:
@@ -100,7 +101,10 @@ def _format_slack_scope_context(
     )
 
     private_history_note: str = ""
-    if (slack_channel_type or "").strip().lower() in {"group", "private_channel"}:
+    if (
+        (slack_channel_type or "").strip().lower() in {"group", "private_channel"}
+        and source in {"slack_mention", "slack_thread"}
+    ):
         private_history_note = (
             "\nIf asked about message history in this private channel, include this note in your response: "
             "\"We do not proactively store private channel history outside of direct conversations with the bot.\""
@@ -1195,6 +1199,7 @@ class ChatOrchestrator:
                 slack_thread_ts=slack_thread_ts,
                 slack_channel_name=slack_channel_name,
                 slack_channel_type=slack_channel_type,
+                source=self.source,
             )
         )
 
