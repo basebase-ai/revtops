@@ -246,6 +246,9 @@ class CodeSandboxConnector(BaseConnector):
             conversation_id,
             self.organization_id,
         )
+        pending_participant_user_ids: list[str] = _extract_pending_participant_user_ids(params)
+        if pending_participant_user_ids:
+            conversation_allowed_user_ids = sorted(set(conversation_allowed_user_ids).union(pending_participant_user_ids))
         if basebase_user_id not in conversation_allowed_user_ids:
             logger.warning(
                 "[Sandbox] User %s is not allowed for conversation %s",
@@ -401,6 +404,36 @@ def _normalize_allowed_user_ids(value: Any) -> str:
         normalized: set[str] = {str(item).strip() for item in value if str(item).strip()}
         return ",".join(sorted(normalized))
     return ""
+
+
+def _extract_pending_participant_user_ids(params: dict[str, Any]) -> list[str]:
+    raw_values: list[Any] = []
+    for key in (
+        "pending_participant_user_ids",
+        "pending_participating_user_ids",
+        "about_to_add_participant_user_ids",
+        "about_to_add_user_ids",
+    ):
+        if key in params:
+            raw_values.append(params.get(key))
+
+    normalized: set[str] = set()
+    for value in raw_values:
+        if value is None:
+            continue
+        if isinstance(value, str):
+            for item in value.split(","):
+                user_id = item.strip()
+                if user_id:
+                    normalized.add(user_id)
+            continue
+        if isinstance(value, (list, tuple, set)):
+            for item in value:
+                user_id = str(item).strip()
+                if user_id:
+                    normalized.add(user_id)
+
+    return sorted(normalized)
 
 
 def _get_sandbox_context_sync(sandbox_id: str) -> dict[str, str]:

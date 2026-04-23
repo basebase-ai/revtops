@@ -1,6 +1,10 @@
 import pytest
 
-from connectors.code_sandbox import CodeSandboxConnector, get_blocked_package_install_reason
+from connectors.code_sandbox import (
+    CodeSandboxConnector,
+    _extract_pending_participant_user_ids,
+    get_blocked_package_install_reason,
+)
 
 
 def test_get_blocked_package_install_reason_allows_non_install_commands() -> None:
@@ -159,6 +163,77 @@ async def test_execute_action_rejects_user_not_in_conversation_allow_list(monkey
             "Current user is not in the conversation allow-list."
         )
     }
+
+
+def test_extract_pending_participant_user_ids_supports_multiple_param_shapes() -> None:
+    assert _extract_pending_participant_user_ids(
+        {
+            "pending_participant_user_ids": ["user_a", " user_b "],
+            "about_to_add_user_ids": "user_c, user_d",
+            "pending_participating_user_ids": {"user_b", "user_e"},
+        }
+    ) == ["user_a", "user_b", "user_c", "user_d", "user_e"]
+
+
+@pytest.mark.asyncio
+async def test_execute_action_allows_pending_participant_when_about_to_add(monkeypatch) -> None:
+    connector = CodeSandboxConnector(organization_id="org_123")
+    monkeypatch.setattr("connectors.code_sandbox.settings.E2B_API_KEY", "test-key")
+
+    async def _fake_allowed_users(conversation_id: str, organization_id: str) -> list[str]:
+        assert conversation_id == "conv_123"
+        assert organization_id == "org_123"
+        return ["user_existing"]
+
+    async def _fake_get_sandbox_id(conversation_id: str, organization_id: str) -> str | None:
+        assert conversation_id == "conv_123"
+        assert organization_id == "org_123"
+        return None
+
+    async def _fake_save_sandbox_id(conversation_id: str, organization_id: str, sandbox_id: str | None) -> None:
+        assert conversation_id == "conv_123"
+        assert organization_id == "org_123"
+        assert sandbox_id == "sbx_new"
+
+    def _fake_create_sandbox(
+        organization_id: str,
+        conversation_id: str,
+        basebase_user_id: str,
+        allowed_user_ids_csv: str,
+    ) -> str:
+        assert organization_id == "org_123"
+        assert conversation_id == "conv_123"
+        assert basebase_user_id == "user_new"
+        assert allowed_user_ids_csv == "user_existing,user_new"
+        return "sbx_new"
+
+    def _fake_run_command(sandbox_id: str, command: str) -> dict[str, object]:
+        assert sandbox_id == "sbx_new"
+        assert command == "python3 -c 'print(1)'"
+        return {"stdout": "1\n", "stderr": "", "exit_code": 0}
+
+    def _fake_list_output_files(sandbox_id: str) -> list[dict[str, object]]:
+        assert sandbox_id == "sbx_new"
+        return []
+
+    monkeypatch.setattr("connectors.code_sandbox._get_conversation_allowed_user_ids", _fake_allowed_users)
+    monkeypatch.setattr("connectors.code_sandbox._get_sandbox_id_from_db", _fake_get_sandbox_id)
+    monkeypatch.setattr("connectors.code_sandbox._save_sandbox_id_to_db", _fake_save_sandbox_id)
+    monkeypatch.setattr("connectors.code_sandbox._create_sandbox_sync", _fake_create_sandbox)
+    monkeypatch.setattr("connectors.code_sandbox._run_command_sync", _fake_run_command)
+    monkeypatch.setattr("connectors.code_sandbox._list_output_files_sync", _fake_list_output_files)
+
+    result = await connector.execute_action(
+        "execute_command",
+        {
+            "command": "python3 -c 'print(1)'",
+            "conversation_id": "conv_123",
+            "basebase_user_id": "user_new",
+            "about_to_add_user_ids": ["user_new"],
+        },
+    )
+
+    assert result == {"exit_code": 0, "stdout": "1\n", "stderr": ""}
 
 
 @pytest.mark.asyncio
