@@ -1120,13 +1120,13 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
                             <div className="px-3 pb-3 pt-1 border-t border-surface-700/50">
                               <p className="text-xs text-surface-500 mb-2">Linked identities</p>
                               {identities.length > 0 ? (
-                                <div className="space-y-1.5">
+                                <div className="space-y-1 sm:space-y-1.5">
                                   {identities.map((identity) => (
                                     <div
                                       key={identity.id}
-                                    className="flex flex-col gap-1.5 text-xs px-2 py-1.5 rounded bg-surface-700/30"
-                                  >
-                                      <div className="flex items-center gap-2 min-w-0">
+                                      className="grid grid-cols-[auto,minmax(0,1fr),auto] items-center gap-x-2 gap-y-1 text-xs px-2 py-1.5 rounded bg-surface-700/30 sm:flex sm:flex-col sm:gap-1.5"
+                                    >
+                                      <div className="flex items-center gap-2 min-w-0 col-span-2 sm:col-auto">
                                         <span className={`px-1.5 py-0.5 font-medium rounded whitespace-nowrap ${sourceColor(identity.source)}`}>
                                           {sourceLabel(identity.source)}
                                         </span>
@@ -1134,10 +1134,7 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
                                           {identity.externalEmail ?? identity.externalUserid ?? 'Unknown'}
                                         </span>
                                       </div>
-                                      <div className="sm:ml-auto flex items-center gap-2 whitespace-nowrap">
-                                        <span className="text-surface-500">
-                                          {identity.matchSource.replace(/_/g, ' ')}
-                                        </span>
+                                      <div className="flex items-center justify-end sm:justify-start">
                                         {canUnlinkForMember && (
                                           <button
                                             onClick={() => void handleUnlinkIdentity(identity.id)}
@@ -1147,6 +1144,11 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
                                             Unlink
                                           </button>
                                         )}
+                                      </div>
+                                      <div className="col-span-3 sm:col-auto flex items-center gap-2 text-[11px] text-surface-500">
+                                        <span className="truncate">
+                                          {identity.matchSource.replace(/_/g, ' ')}
+                                        </span>
                                       </div>
                                     </div>
                                   ))}
@@ -1179,12 +1181,12 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
                                         key={ui.id}
                                         onClick={() => void handleLinkIdentity(member.id, ui.id)}
                                         disabled={linkIdentityMutation.isPending || unlinkIdentityMutation.isPending}
-                                        className="flex flex-wrap sm:flex-nowrap items-center gap-2 text-xs px-2 py-1.5 rounded bg-surface-700/20 hover:bg-surface-700/50 transition-colors w-full text-left disabled:opacity-50"
+                                        className="grid grid-cols-[auto,minmax(0,1fr),auto] items-center gap-2 text-xs px-2 py-1.5 rounded bg-surface-700/20 hover:bg-surface-700/50 transition-colors w-full text-left disabled:opacity-50 sm:flex sm:flex-nowrap"
                                       >
                                         <span className={`px-1.5 py-0.5 font-medium rounded whitespace-nowrap ${sourceColor(ui.source)}`}>
                                           {sourceLabel(ui.source)}
                                         </span>
-                                        <span className="text-surface-400 truncate">
+                                        <span className="text-surface-400 truncate min-w-0">
                                           {ui.externalEmail ?? ui.externalUserid}
                                         </span>
                                         <span className="ml-auto text-primary-400 whitespace-nowrap">+ Link</span>
