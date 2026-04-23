@@ -1168,11 +1168,19 @@ async def _run_on_connector(
     if not action:
         return {"error": "action is required"}
 
-    # Inject conversation_id for code_sandbox execute_command
+    # Inject code_sandbox context requirements
     if connector == "code_sandbox" and action == "execute_command":
+        if not user_id:
+            return {
+                "error": (
+                    "Code sandbox execution requires an authenticated Basebase user. "
+                    "Unauthenticated access is not allowed."
+                )
+            }
         conversation_id: str | None = (context or {}).get("conversation_id")
         if conversation_id:
             action_params["conversation_id"] = conversation_id
+        action_params["basebase_user_id"] = user_id
 
     dp_ctx = ConnectorContext(
         organization_id=organization_id,
