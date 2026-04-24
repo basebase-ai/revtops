@@ -724,6 +724,15 @@ def _build_inbound_message(
     """Build an :class:`InboundMessage` from a Slack event payload."""
     channel_id: str = event.get("channel", "")
     user_id: str = event.get("user", "")
+    if not user_id:
+        logger.warning(
+            "[slack_events] Incoming Slack message missing user_id channel=%s message_type=%s ts=%s subtype=%s bot_id=%s",
+            channel_id,
+            message_type.value,
+            event.get("ts", "") or event.get("event_ts", ""),
+            event.get("subtype", ""),
+            event.get("bot_id", ""),
+        )
     text: str = text_override if text_override is not None else event.get("text", "")
     event_ts: str = event.get("event_ts", "") or event.get("ts", "")
     message_ts: str = event.get("ts", "") or event_ts
