@@ -170,20 +170,21 @@ def test_app_mention_keeps_non_bot_user_mentions_in_text(monkeypatch) -> None:
     assert msg.text == "who is <@UJON123>?"
 
 
-def test_dm_bot_message_from_current_app_is_ignored(monkeypatch) -> None:
+def test_dm_bot_message_from_current_app_is_logged_not_processed(monkeypatch) -> None:
     calls: list[dict[str, str]] = []
 
     async def _fake_is_duplicate_event(_event_id: str) -> bool:
         return False
 
-    async def _fake_log_external(*_args, **_kwargs) -> bool:
+    async def _fake_log_external(*_args, **kwargs) -> bool:
+        assert kwargs["sender_category"] == "self_bot"
         calls.append({"called": "yes"})
         return True
 
     monkeypatch.setattr(slack_events, "is_duplicate_event", _fake_is_duplicate_event)
     monkeypatch.setattr(
         slack_events,
-        "_log_external_dm_message_without_processing",
+        "_log_bot_dm_message_without_processing",
         _fake_log_external,
     )
 
@@ -205,7 +206,7 @@ def test_dm_bot_message_from_current_app_is_ignored(monkeypatch) -> None:
     }
 
     asyncio.run(slack_events._process_event_callback_impl(payload))
-    assert calls == []
+    assert len(calls) == 1
 
 
 def test_dm_bot_message_from_external_source_is_logged_not_processed(monkeypatch) -> None:
@@ -215,7 +216,8 @@ def test_dm_bot_message_from_external_source_is_logged_not_processed(monkeypatch
     async def _fake_is_duplicate_event(_event_id: str) -> bool:
         return False
 
-    async def _fake_log_external(*_args, **_kwargs) -> bool:
+    async def _fake_log_external(*_args, **kwargs) -> bool:
+        assert kwargs["sender_category"] == "other_bot"
         calls.append({"called": "yes"})
         return True
 
@@ -226,7 +228,7 @@ def test_dm_bot_message_from_external_source_is_logged_not_processed(monkeypatch
     monkeypatch.setattr(slack_events, "is_duplicate_event", _fake_is_duplicate_event)
     monkeypatch.setattr(
         slack_events,
-        "_log_external_dm_message_without_processing",
+        "_log_bot_dm_message_without_processing",
         _fake_log_external,
     )
     monkeypatch.setattr(SlackMessenger, "process_inbound", _fake_process_inbound)

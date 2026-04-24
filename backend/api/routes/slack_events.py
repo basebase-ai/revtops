@@ -135,12 +135,14 @@ def _classify_message_sender(
     return "other_bot"
 
 
-async def _log_external_dm_message_without_processing(
+async def _log_bot_dm_message_without_processing(
     messenger: SlackMessenger,
     event: dict[str, Any],
     team_id: str,
+    *,
+    sender_category: str,
 ) -> bool:
-    """Attach a bot-authored DM/group-DM message to existing conversation history without agent processing."""
+    """Attach a bot-authored DM/group-DM message to conversation history without agent processing."""
     channel_type: str = str(event.get("channel_type") or "").strip().lower()
     if channel_type not in {"im", "mpim", "groupchat"}:
         return False
@@ -188,7 +190,7 @@ async def _log_external_dm_message_without_processing(
             {
                 "type": "text",
                 "text": content_text,
-                "sender_category": "other_bot",
+                "sender_category": sender_category,
             }
         ]
         if files:
@@ -219,9 +221,10 @@ async def _log_external_dm_message_without_processing(
         await session.commit()
 
     logger.info(
-        "[slack_events] Logged bot-authored DM/group-DM message without processing conversation_id=%s source_channel_id=%s",
+        "[slack_events] Logged bot-authored DM/group-DM message without processing conversation_id=%s source_channel_id=%s sender_category=%s",
         conversation_id,
         source_channel_id,
+        sender_category,
     )
     return True
 
@@ -460,9 +463,16 @@ async def _process_event_callback_impl(payload: dict[str, Any]) -> None:
         sender_category: str = _classify_message_sender(payload, event, bot_user_ids)
         if sender_category == "self_bot":
             logger.info(
-                "[slack_events] Ignoring self-authored bot message channel=%s thread=%s",
+                "[slack_events] Handling message as self_bot channel=%s thread=%s type=%s",
                 event.get("channel", ""),
                 event.get("thread_ts"),
+                channel_type,
+            )
+            await _log_bot_dm_message_without_processing(
+                messenger,
+                event,
+                team_id,
+                sender_category=sender_category,
             )
             return
         if sender_category == "other_bot":
@@ -472,7 +482,12 @@ async def _process_event_callback_impl(payload: dict[str, Any]) -> None:
                 event.get("thread_ts"),
                 channel_type,
             )
-            await _log_external_dm_message_without_processing(messenger, event, team_id)
+            await _log_bot_dm_message_without_processing(
+                messenger,
+                event,
+                team_id,
+                sender_category=sender_category,
+            )
             return
         if sender_category == "user" and (event.get("bot_id") or event.get("subtype") == "bot_message"):
             # Defensive fallback: if payload is bot-like but classification didn't hit,
