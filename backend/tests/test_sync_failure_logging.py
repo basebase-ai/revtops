@@ -72,7 +72,7 @@ def test_sync_failure_logging_includes_case_and_context(monkeypatch, caplog) -> 
         lambda: {"slack": FailingConnector},
     )
 
-    with caplog.at_level(logging.WARNING):
+    with caplog.at_level(logging.DEBUG):
         result = asyncio.run(
             sync_tasks._sync_integration("11111111-1111-1111-1111-111111111111", "slack")
         )
@@ -81,6 +81,11 @@ def test_sync_failure_logging_includes_case_and_context(monkeypatch, caplog) -> 
     assert any(
         "Connector sync failed provider=slack" in rec.message
         and "case=auth_or_connection_revoked" in rec.message
+        for rec in caplog.records
+    )
+    assert any(
+        "Connector sync failure diagnostics provider=slack" in rec.message
+        and "error_type=RuntimeError" in rec.message
         for rec in caplog.records
     )
     assert any(event[0] == "sync.failed" for event in emitted_events)
