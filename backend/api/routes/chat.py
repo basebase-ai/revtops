@@ -550,10 +550,16 @@ async def list_conversations(
         )
         result = await session.execute(ordered_query)
         conversations: list[Conversation] = list(result.scalars().all())
+        has_more = len(conversations) > limit
 
-        # Slow path: if we got fewer rows than limit, Slack conversations may
+        # Fast path: if the primary query already proved there is another page,
+        # avoid waiting on Slack fallback and keep cursor metadata as-is.
+        if has_more:
+            conversations = conversations[:limit]
+
+        # Slow path: if we do not yet have a full page, Slack conversations may
         # be missing. Resolve Slack IDs and merge any additional results.
-        if len(conversations) < limit:
+        if not has_more and len(conversations) < limit:
             slack_user_ids = await _get_slack_user_ids(auth, session=session)
             if slack_user_ids:
                 logger.info(
@@ -611,9 +617,9 @@ async def list_conversations(
                     reverse=True,
                 )
 
-        has_more = len(conversations) > limit
-        if has_more:
-            conversations = conversations[:limit]
+            has_more = len(conversations) > limit
+            if has_more:
+                conversations = conversations[:limit]
         next_cursor = None
         if conversations and has_more:
             last = conversations[-1]
