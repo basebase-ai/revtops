@@ -550,13 +550,6 @@ async def list_conversations(
         )
         result = await session.execute(ordered_query)
         conversations: list[Conversation] = list(result.scalars().all())
-        has_more = len(conversations) > limit
-        if has_more:
-            conversations = conversations[:limit]
-        next_cursor = None
-        if conversations and has_more:
-            last = conversations[-1]
-            next_cursor = _encode_cursor(last.updated_at, last.id)
 
         # Slow path: if we got fewer rows than limit, Slack conversations may
         # be missing. Resolve Slack IDs and merge any additional results.
@@ -604,15 +597,27 @@ async def list_conversations(
                     )
 
                 slack_result = await session.execute(
-                    slack_query.order_by(Conversation.updated_at.desc()).limit(limit)
+                    slack_query.order_by(
+                        Conversation.updated_at.desc(), Conversation.id.desc()
+                    ).limit(limit + 1)
                 )
                 for conv in slack_result.scalars().all():
                     if conv.id not in seen_ids:
                         conversations.append(conv)
                         seen_ids.add(conv.id)
 
-                conversations.sort(key=lambda c: c.updated_at, reverse=True)
-                conversations = conversations[:limit]
+                conversations.sort(
+                    key=lambda c: (c.updated_at, c.id),
+                    reverse=True,
+                )
+
+        has_more = len(conversations) > limit
+        if has_more:
+            conversations = conversations[:limit]
+        next_cursor = None
+        if conversations and has_more:
+            last = conversations[-1]
+            next_cursor = _encode_cursor(last.updated_at, last.id)
 
         # Collect all participant user IDs to fetch in one query
         all_participant_ids: set[UUID] = set()
