@@ -521,23 +521,10 @@ async def _process_event_callback_impl(payload: dict[str, Any]) -> None:
     if inner_type == "message":
         channel_type: str | None = event.get("channel_type")
         sender_category: str = _classify_message_sender(payload, event, bot_user_ids)
-        if sender_category == "self_bot":
+        if sender_category in {"self_bot", "other_bot"}:
             logger.info(
-                "[slack_events] Handling message as self_bot channel=%s thread=%s type=%s",
-                event.get("channel", ""),
-                event.get("thread_ts"),
-                channel_type,
-            )
-            await _log_bot_dm_message_without_processing(
-                messenger,
-                event,
-                team_id,
-                sender_category=sender_category,
-            )
-            return
-        if sender_category == "other_bot":
-            logger.info(
-                "[slack_events] Handling message as other_bot channel=%s thread=%s type=%s",
+                "[slack_events] Handling message as %s channel=%s thread=%s type=%s",
+                sender_category,
                 event.get("channel", ""),
                 event.get("thread_ts"),
                 channel_type,
