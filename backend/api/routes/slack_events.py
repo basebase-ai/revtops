@@ -39,7 +39,7 @@ from messengers.base import InboundMessage, MessageType
 from messengers.slack import SlackMessenger
 from models.chat_message import ChatMessage
 from models.conversation import Conversation
-from models.database import get_session
+from models.database import get_admin_session
 
 logger = logging.getLogger(__name__)
 
@@ -196,7 +196,10 @@ async def _log_bot_dm_message_without_processing(
         )
         return False
 
-    async with get_session(organization_id=organization_id) as session:
+    # Use an admin-scoped session here so bot-authored DM messages can still
+    # be attached when the target conversation scope is private. A tenant RLS
+    # session without user context cannot read private conversations.
+    async with get_admin_session() as session:
         convo_row = await session.execute(
             select(Conversation.id)
             .where(Conversation.organization_id == UUID(organization_id))

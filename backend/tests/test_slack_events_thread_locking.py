@@ -1,4 +1,6 @@
 import asyncio
+from contextlib import asynccontextmanager
+from uuid import uuid4
 
 from api.routes import slack_events
 from messengers.base import InboundMessage, MessageType
@@ -291,3 +293,53 @@ def test_candidate_dm_source_channel_ids_handles_channel_without_thread() -> Non
         channel_id="D123",
         thread_ts=None,
     ) == ["D123"]
+
+
+def test_log_bot_dm_message_uses_admin_session_for_private_conversations(monkeypatch) -> None:
+    conversation_id = uuid4()
+    used_admin_session = {"value": False}
+
+    class _FakeResult:
+        def scalar_one_or_none(self):
+            return conversation_id
+
+    class _FakeSession:
+        async def execute(self, *_args, **_kwargs):
+            return _FakeResult()
+
+        def add(self, _row) -> None:
+            return None
+
+        async def commit(self) -> None:
+            return None
+
+    @asynccontextmanager
+    async def _fake_get_admin_session():
+        used_admin_session["value"] = True
+        yield _FakeSession()
+
+    async def _fake_resolve_org(_team_id: str) -> str:
+        return str(uuid4())
+
+    class _FakeMessenger:
+        _resolve_org_from_workspace = staticmethod(_fake_resolve_org)
+
+    monkeypatch.setattr(slack_events, "get_admin_session", _fake_get_admin_session)
+
+    event = {
+        "channel_type": "im",
+        "channel": "D0AA3KFETUY",
+        "text": "bot reply in private convo",
+        "bot_id": "B123",
+    }
+    persisted = asyncio.run(
+        slack_events._log_bot_dm_message_without_processing(
+            _FakeMessenger(),
+            event,
+            "T123",
+            sender_category="self_bot",
+        )
+    )
+
+    assert persisted is True
+    assert used_admin_session["value"] is True
