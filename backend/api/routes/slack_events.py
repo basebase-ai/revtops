@@ -32,7 +32,7 @@ from uuid import UUID, uuid4
 import redis.asyncio as redis
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
-from sqlalchemy import select, update
+from sqlalchemy import case, select, update
 
 from config import get_redis_connection_kwargs, settings
 from messengers.base import InboundMessage, MessageType
@@ -149,8 +149,11 @@ async def _log_bot_dm_message_without_processing(
 
     channel_id: str = str(event.get("channel") or "").strip()
     thread_ts: str | None = event.get("thread_ts")
-    source_channel_id: str = f"{channel_id}:{thread_ts}" if thread_ts else channel_id
-    if not source_channel_id:
+    source_channel_candidates: list[str] = _candidate_dm_source_channel_ids(
+        channel_id=channel_id,
+        thread_ts=thread_ts,
+    )
+    if not source_channel_candidates:
         return False
 
     text_body: str = str(event.get("text") or "")
@@ -173,15 +176,25 @@ async def _log_bot_dm_message_without_processing(
             select(Conversation.id)
             .where(Conversation.organization_id == UUID(organization_id))
             .where(Conversation.source == "slack")
-            .where(Conversation.source_channel_id == source_channel_id)
-            .order_by(Conversation.updated_at.desc(), Conversation.id.desc())
+            .where(Conversation.source_channel_id.in_(source_channel_candidates))
+            .order_by(
+                case(
+                    *[
+                        (Conversation.source_channel_id == source_channel_id, index)
+                        for index, source_channel_id in enumerate(source_channel_candidates)
+                    ],
+                    else_=len(source_channel_candidates),
+                ),
+                Conversation.updated_at.desc(),
+                Conversation.id.desc(),
+            )
             .limit(1)
         )
         conversation_id: UUID | None = convo_row.scalar_one_or_none()
         if conversation_id is None:
             logger.info(
-                "[slack_events] No associated conversation for DM/group-DM bot message source_channel_id=%s; skipping persistence",
-                source_channel_id,
+                "[slack_events] No associated conversation for DM/group-DM bot message source_channel_candidates=%s; skipping persistence",
+                source_channel_candidates,
             )
             return False
 
@@ -223,10 +236,29 @@ async def _log_bot_dm_message_without_processing(
     logger.info(
         "[slack_events] Logged bot-authored DM/group-DM message without processing conversation_id=%s source_channel_id=%s sender_category=%s",
         conversation_id,
-        source_channel_id,
+        source_channel_candidates[0],
         sender_category,
     )
     return True
+
+
+def _candidate_dm_source_channel_ids(*, channel_id: str, thread_ts: str | None) -> list[str]:
+    """Return preferred conversation source keys for DM/group-DM bot messages.
+
+    For threaded DM bot messages we first try ``channel:thread_ts`` then fall
+    back to the channel-only key because many historical DM conversations were
+    created without thread binding.
+    """
+    normalized_channel_id: str = str(channel_id or "").strip()
+    if not normalized_channel_id:
+        return []
+
+    candidates: list[str] = []
+    normalized_thread_ts: str = str(thread_ts or "").strip()
+    if normalized_thread_ts:
+        candidates.append(f"{normalized_channel_id}:{normalized_thread_ts}")
+    candidates.append(normalized_channel_id)
+    return candidates
 
 
 async def get_redis() -> redis.Redis:
