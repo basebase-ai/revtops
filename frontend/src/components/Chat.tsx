@@ -260,6 +260,10 @@ function getMessageSenderCategory(message: ChatMessage): string | null {
   return null;
 }
 
+function isSelfBotAssistantMessage(message: ChatMessage): boolean {
+  return message.role === 'assistant' && getMessageSenderCategory(message) === 'self_bot';
+}
+
 function SummaryPanel({ summary, onClose }: { summary: ConversationSummaryText; onClose: () => void }): JSX.Element {
   return (
     <div className="border-b border-surface-800 bg-surface-900 px-4 md:px-6 py-3">
@@ -664,6 +668,10 @@ export function Chat({
       })
       .map(({ message }) => message);
   }, [pendingMessages, conversationState?.messages]);
+  const visibleMessages = useMemo(
+    () => messages.filter((message) => !isSelfBotAssistantMessage(message)),
+    [messages],
+  );
   const isThinking = pendingThinking || conversationThinking;
   const hasMoreMessages = conversationState?.hasMore ?? false;
 
@@ -2501,7 +2509,7 @@ export function Chat({
                 User context is missing — artifacts and apps may not save correctly. Please refresh or re-sign in.
               </div>
             )}
-            {messages.length === 0 && !isThinking ? (
+            {visibleMessages.length === 0 && !isThinking ? (
               conversationType === 'workflow' ? (
                 // Show loading state for workflow conversations waiting for agent to start
                 <div className="flex-1 flex flex-col items-center justify-center py-20">
@@ -2537,8 +2545,8 @@ export function Chat({
                     </button>
                   </div>
                 )}
-                {messages.map((msg, idx) => {
-                  const prevMsg: ChatMessage | undefined = idx > 0 ? messages[idx - 1] : undefined;
+                {visibleMessages.map((msg, idx) => {
+                  const prevMsg: ChatMessage | undefined = idx > 0 ? visibleMessages[idx - 1] : undefined;
                   const showDivider: boolean = !!prevMsg && prevMsg.role !== msg.role;
                   const isGroupedWithPrevious: boolean = shouldGroupMessageWithPrevious(prevMsg, msg, userId);
                   return (
@@ -2576,7 +2584,7 @@ export function Chat({
                 )}
                 {isThinking && <ThinkingIndicator />}
 
-                {isWorkflowPolling && messages.length > 0 && !isThinking && (
+                {isWorkflowPolling && visibleMessages.length > 0 && !isThinking && (
                   <div className="group/msg flex items-center gap-3 px-5 -mx-5 py-1 text-surface-500">
                     <div className={`${CHAT_MSG_AVATAR} flex items-center justify-center`}>
                       <div className="w-4 h-4 border-2 border-surface-500 border-t-primary-500 rounded-full animate-spin" />
