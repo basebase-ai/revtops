@@ -277,3 +277,17 @@ def test_classify_message_sender_categories() -> None:
     assert slack_events._classify_message_sender(payload, user_event, bot_user_ids) == "user"
     assert slack_events._classify_message_sender(payload, self_bot_event, bot_user_ids) == "self_bot"
     assert slack_events._classify_message_sender(payload, other_bot_event, bot_user_ids) == "other_bot"
+
+
+def test_candidate_dm_source_channel_ids_prefers_thread_then_channel() -> None:
+    assert slack_events._candidate_dm_source_channel_ids(
+        channel_id="D123",
+        thread_ts="1700000000.111",
+    ) == ["D123:1700000000.111", "D123"]
+
+
+def test_candidate_dm_source_channel_ids_handles_channel_without_thread() -> None:
+    assert slack_events._candidate_dm_source_channel_ids(
+        channel_id="D123",
+        thread_ts=None,
+    ) == ["D123"]
