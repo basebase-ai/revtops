@@ -25,15 +25,21 @@ import logging
 import re
 import time
 from contextlib import asynccontextmanager
+from datetime import datetime
 from typing import Any
+from uuid import UUID, uuid4
 
 import redis.asyncio as redis
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
+from sqlalchemy import select, update
 
 from config import get_redis_connection_kwargs, settings
 from messengers.base import InboundMessage, MessageType
 from messengers.slack import SlackMessenger
+from models.chat_message import ChatMessage
+from models.conversation import Conversation
+from models.database import get_session
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +101,129 @@ class SlackThreadLockManager:
 
 
 _thread_lock_manager = SlackThreadLockManager()
+
+
+def _is_current_app_message(
+    payload: dict[str, Any],
+    event: dict[str, Any],
+    bot_user_ids: set[str],
+) -> bool:
+    """Best-effort check for whether a bot/authored Slack message was sent by this app."""
+    event_user: str = str(event.get("user") or "").strip()
+    if event_user and event_user in bot_user_ids:
+        return True
+
+    payload_app_id: str = str(payload.get("api_app_id") or "").strip()
+    bot_profile: dict[str, Any] = event.get("bot_profile") or {}
+    event_app_id: str = str(
+        bot_profile.get("app_id") or event.get("app_id") or ""
+    ).strip()
+    return bool(payload_app_id and event_app_id and payload_app_id == event_app_id)
+
+
+def _classify_message_sender(
+    payload: dict[str, Any],
+    event: dict[str, Any],
+    bot_user_ids: set[str],
+) -> str:
+    """Classify Slack message sender as ``user``, ``self_bot``, or ``other_bot``."""
+    is_bot_message: bool = bool(event.get("bot_id") or event.get("subtype") == "bot_message")
+    if not is_bot_message:
+        return "user"
+    if _is_current_app_message(payload, event, bot_user_ids):
+        return "self_bot"
+    return "other_bot"
+
+
+async def _log_external_dm_message_without_processing(
+    messenger: SlackMessenger,
+    event: dict[str, Any],
+    team_id: str,
+) -> bool:
+    """Attach a bot-authored DM/group-DM message to existing conversation history without agent processing."""
+    channel_type: str = str(event.get("channel_type") or "").strip().lower()
+    if channel_type not in {"im", "mpim", "groupchat"}:
+        return False
+
+    channel_id: str = str(event.get("channel") or "").strip()
+    thread_ts: str | None = event.get("thread_ts")
+    source_channel_id: str = f"{channel_id}:{thread_ts}" if thread_ts else channel_id
+    if not source_channel_id:
+        return False
+
+    text_body: str = str(event.get("text") or "")
+    files: list[dict[str, Any]] = [
+        f for f in (event.get("files") or []) if isinstance(f, dict)
+    ]
+    if not text_body.strip() and not files:
+        return False
+
+    organization_id: str | None = await messenger._resolve_org_from_workspace(team_id)
+    if not organization_id:
+        logger.info(
+            "[slack_events] DM/group-DM bot message cannot be linked; no org for workspace=%s",
+            team_id,
+        )
+        return False
+
+    async with get_session(organization_id=organization_id) as session:
+        convo_row = await session.execute(
+            select(Conversation.id)
+            .where(Conversation.organization_id == UUID(organization_id))
+            .where(Conversation.source == "slack")
+            .where(Conversation.source_channel_id == source_channel_id)
+            .order_by(Conversation.updated_at.desc(), Conversation.id.desc())
+            .limit(1)
+        )
+        conversation_id: UUID | None = convo_row.scalar_one_or_none()
+        if conversation_id is None:
+            logger.info(
+                "[slack_events] No associated conversation for DM/group-DM bot message source_channel_id=%s; skipping persistence",
+                source_channel_id,
+            )
+            return False
+
+        content_text: str = text_body.strip() or "(bot message with attachments)"
+        content_blocks: list[dict[str, Any]] = [
+            {
+                "type": "text",
+                "text": content_text,
+                "sender_category": "other_bot",
+            }
+        ]
+        if files:
+            content_blocks.append({"type": "slack_files", "files": files})
+
+        session.add(
+            ChatMessage(
+                id=uuid4(),
+                conversation_id=conversation_id,
+                organization_id=UUID(organization_id),
+                user_id=None,
+                role="assistant",
+                source_user_id=str(event.get("user") or event.get("bot_id") or ""),
+                content=content_text,
+                content_blocks=content_blocks,
+                created_at=datetime.utcnow(),
+            )
+        )
+        await session.execute(
+            update(Conversation)
+            .where(Conversation.id == conversation_id)
+            .values(
+                updated_at=datetime.utcnow(),
+                message_count=Conversation.message_count + 1,
+                last_message_preview=content_text[:200],
+            )
+        )
+        await session.commit()
+
+    logger.info(
+        "[slack_events] Logged bot-authored DM/group-DM message without processing conversation_id=%s source_channel_id=%s",
+        conversation_id,
+        source_channel_id,
+    )
+    return True
 
 
 async def get_redis() -> redis.Redis:
@@ -328,7 +457,30 @@ async def _process_event_callback_impl(payload: dict[str, Any]) -> None:
 
     if inner_type == "message":
         channel_type: str | None = event.get("channel_type")
-        if event.get("bot_id") or event.get("subtype") == "bot_message":
+        sender_category: str = _classify_message_sender(payload, event, bot_user_ids)
+        if sender_category == "self_bot":
+            logger.info(
+                "[slack_events] Ignoring self-authored bot message channel=%s thread=%s",
+                event.get("channel", ""),
+                event.get("thread_ts"),
+            )
+            return
+        if sender_category == "other_bot":
+            logger.info(
+                "[slack_events] Handling message as other_bot channel=%s thread=%s type=%s",
+                event.get("channel", ""),
+                event.get("thread_ts"),
+                channel_type,
+            )
+            await _log_external_dm_message_without_processing(messenger, event, team_id)
+            return
+        if sender_category == "user" and (event.get("bot_id") or event.get("subtype") == "bot_message"):
+            # Defensive fallback: if payload is bot-like but classification didn't hit,
+            # treat as self-authored to avoid accidental agent invocation.
+            logger.warning(
+                "[slack_events] Unexpected bot-like payload classified as user; skipping channel=%s",
+                event.get("channel", ""),
+            )
             return
         if event.get("subtype") in ("message_changed", "message_deleted"):
             return

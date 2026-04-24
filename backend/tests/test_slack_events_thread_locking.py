@@ -168,3 +168,110 @@ def test_app_mention_keeps_non_bot_user_mentions_in_text(monkeypatch) -> None:
     msg: InboundMessage = captured[0]
     assert msg.message_type == MessageType.MENTION
     assert msg.text == "who is <@UJON123>?"
+
+
+def test_dm_bot_message_from_current_app_is_ignored(monkeypatch) -> None:
+    calls: list[dict[str, str]] = []
+
+    async def _fake_is_duplicate_event(_event_id: str) -> bool:
+        return False
+
+    async def _fake_log_external(*_args, **_kwargs) -> bool:
+        calls.append({"called": "yes"})
+        return True
+
+    monkeypatch.setattr(slack_events, "is_duplicate_event", _fake_is_duplicate_event)
+    monkeypatch.setattr(
+        slack_events,
+        "_log_external_dm_message_without_processing",
+        _fake_log_external,
+    )
+
+    payload = {
+        "type": "event_callback",
+        "event_id": "EvBotSelf1",
+        "team_id": "T123",
+        "api_app_id": "A123",
+        "authed_users": ["UBOT"],
+        "event": {
+            "type": "message",
+            "channel_type": "im",
+            "channel": "D123",
+            "subtype": "bot_message",
+            "bot_profile": {"app_id": "A123"},
+            "text": "self bot message",
+            "ts": "1700000000.010",
+        },
+    }
+
+    asyncio.run(slack_events._process_event_callback_impl(payload))
+    assert calls == []
+
+
+def test_dm_bot_message_from_external_source_is_logged_not_processed(monkeypatch) -> None:
+    calls: list[dict[str, str]] = []
+    processed: list[InboundMessage] = []
+
+    async def _fake_is_duplicate_event(_event_id: str) -> bool:
+        return False
+
+    async def _fake_log_external(*_args, **_kwargs) -> bool:
+        calls.append({"called": "yes"})
+        return True
+
+    async def _fake_process_inbound(self, message: InboundMessage):
+        processed.append(message)
+        return {"status": "success"}
+
+    monkeypatch.setattr(slack_events, "is_duplicate_event", _fake_is_duplicate_event)
+    monkeypatch.setattr(
+        slack_events,
+        "_log_external_dm_message_without_processing",
+        _fake_log_external,
+    )
+    monkeypatch.setattr(SlackMessenger, "process_inbound", _fake_process_inbound)
+
+    payload = {
+        "type": "event_callback",
+        "event_id": "EvBotExternal1",
+        "team_id": "T123",
+        "api_app_id": "A123",
+        "authed_users": ["UBOT"],
+        "event": {
+            "type": "message",
+            "channel_type": "im",
+            "channel": "D123",
+            "subtype": "bot_message",
+            "bot_profile": {"app_id": "A999"},
+            "bot_id": "B999",
+            "text": "external bot message",
+            "ts": "1700000000.020",
+        },
+    }
+
+    asyncio.run(slack_events._process_event_callback_impl(payload))
+    assert len(calls) == 1
+    assert processed == []
+
+
+def test_classify_message_sender_categories() -> None:
+    payload = {"api_app_id": "A123"}
+    bot_user_ids = {"UBOT"}
+
+    user_event = {"type": "message", "channel": "C123", "user": "U111", "text": "hello"}
+    self_bot_event = {
+        "type": "message",
+        "subtype": "bot_message",
+        "channel": "D123",
+        "bot_profile": {"app_id": "A123"},
+    }
+    other_bot_event = {
+        "type": "message",
+        "subtype": "bot_message",
+        "channel": "D123",
+        "bot_profile": {"app_id": "A999"},
+    }
+
+    assert slack_events._classify_message_sender(payload, user_event, bot_user_ids) == "user"
+    assert slack_events._classify_message_sender(payload, self_bot_event, bot_user_ids) == "self_bot"
+    assert slack_events._classify_message_sender(payload, other_bot_event, bot_user_ids) == "other_bot"

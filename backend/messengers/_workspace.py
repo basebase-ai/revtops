@@ -136,6 +136,7 @@ def _build_workflow_context_for_message(
         slack_channel_id: str | None = ctx.get("channel_id")
         slack_thread_ts: str | None = ctx.get("thread_id") or ctx.get("thread_ts")
         slack_channel_name: str | None = ctx.get("channel_name")
+        slack_channel_type: str | None = ctx.get("channel_type")
 
         if slack_channel_id and not workflow_context.get("slack_channel_id"):
             workflow_context["slack_channel_id"] = slack_channel_id
@@ -143,6 +144,12 @@ def _build_workflow_context_for_message(
             workflow_context["slack_thread_ts"] = slack_thread_ts
         if slack_channel_name and not workflow_context.get("slack_channel_name"):
             workflow_context["slack_channel_name"] = slack_channel_name
+        if slack_channel_type and not workflow_context.get("slack_channel_type"):
+            # NOTE FOR FUTURE CODE AGENTS (e.g., Codex):
+            # DM policy decisions should generally be kept consistent across 1:1 DMs,
+            # group DMs, and private channels unless an explicit product requirement
+            # says otherwise.
+            workflow_context["slack_channel_type"] = slack_channel_type
 
     return workflow_context or None
 

@@ -240,10 +240,24 @@ function shouldGroupMessageWithPrevious(
 ): boolean {
   if (!prev) return false;
   if (prev.role !== current.role) return false;
-  if (current.role === 'assistant') return true;
+  if (current.role === 'assistant') {
+    const prevSenderCategory = getMessageSenderCategory(prev);
+    const currentSenderCategory = getMessageSenderCategory(current);
+    return prevSenderCategory === currentSenderCategory;
+  }
   const prevUid: string = prev.userId ?? currentUserId ?? 'self';
   const currUid: string = current.userId ?? currentUserId ?? 'self';
   return prevUid === currUid;
+}
+
+function getMessageSenderCategory(message: ChatMessage): string | null {
+  for (const block of message.contentBlocks ?? []) {
+    if (block.type !== 'text') continue;
+    const senderCategory: string | undefined =
+      block.sender_category ?? block.senderCategory;
+    if (senderCategory) return senderCategory;
+  }
+  return null;
 }
 
 function SummaryPanel({ summary, onClose }: { summary: ConversationSummaryText; onClose: () => void }): JSX.Element {
@@ -3272,6 +3286,8 @@ function MessageWithBlocks({
 }): JSX.Element {
   const blocks = message.contentBlocks ?? [];
   const isUser = message.role === 'user';
+  const senderCategory: string | null = getMessageSenderCategory(message);
+  const isOtherBotMessage: boolean = !isUser && senderCategory === 'other_bot';
   const currentUser = useAppStore((s) => s.user);
   
   if (blocks.length === 0) {
@@ -3479,13 +3495,21 @@ function MessageWithBlocks({
       {isGroupedWithPrevious ? (
         <div className={CHAT_MSG_AVATAR_SPACER} aria-hidden />
       ) : (
-        <img src={AGENT_AVATAR_PATH} alt={APP_NAME} className={`${CHAT_MSG_AVATAR} object-cover`} />
+        isOtherBotMessage ? (
+          <div className={`${CHAT_MSG_AVATAR} rounded-lg bg-violet-500/20 border border-violet-400/35 flex items-center justify-center`}>
+            <svg className="w-4 h-4 text-violet-300" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M12 3v4m-6 5h12m-9 9h6a3 3 0 003-3v-4H6v4a3 3 0 003 3zM9 7h.01M15 7h.01" />
+            </svg>
+          </div>
+        ) : (
+          <img src={AGENT_AVATAR_PATH} alt={APP_NAME} className={`${CHAT_MSG_AVATAR} object-cover`} />
+        )
       )}
 
-      <div className="flex-1 min-w-0 overflow-hidden -mt-px">
+      <div className={`flex-1 min-w-0 overflow-hidden -mt-px ${isOtherBotMessage ? 'pl-2 border-l-2 border-violet-400/40' : ''}`}>
         {!isGroupedWithPrevious && (
           <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0">
-            <span className={CHAT_MSG_NAME}>{APP_NAME}</span>
+            <span className={CHAT_MSG_NAME}>{isOtherBotMessage ? 'Other bot' : APP_NAME}</span>
             <span className={CHAT_MSG_TIME}>
               {message.timestamp.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}
             </span>
