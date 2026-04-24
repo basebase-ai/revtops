@@ -103,6 +103,31 @@ class SlackThreadLockManager:
 _thread_lock_manager = SlackThreadLockManager()
 
 
+def _log_dropped_inbound_result(
+    *,
+    result: dict[str, Any] | None,
+    channel_id: str,
+    thread_ts: str | None,
+    message_type: MessageType,
+) -> None:
+    """Log when inbound Slack messages are accepted by webhook but dropped downstream."""
+    if not isinstance(result, dict):
+        return
+
+    status: str = str(result.get("status") or "")
+    if status in {"ignored", "rejected", "error"}:
+        logger.warning(
+            "[slack_events] Dropped inbound Slack message status=%s reason=%s error=%s channel=%s thread=%s message_type=%s conversation_id=%s",
+            status,
+            result.get("reason"),
+            result.get("error"),
+            channel_id,
+            thread_ts,
+            message_type.value,
+            result.get("conversation_id"),
+        )
+
+
 def _is_current_app_message(
     payload: dict[str, Any],
     event: dict[str, Any],
@@ -540,7 +565,13 @@ async def _process_event_callback_impl(payload: dict[str, Any]) -> None:
                 message = _build_inbound_message(
                     event, team_id, MessageType.DIRECT, bot_user_ids=bot_user_ids,
                 )
-                await messenger.process_inbound(message)
+                result = await messenger.process_inbound(message)
+                _log_dropped_inbound_result(
+                    result=result,
+                    channel_id=channel_id,
+                    thread_ts=thread_ts,
+                    message_type=MessageType.DIRECT,
+                )
             return
 
         thread_ts = event.get("thread_ts")
@@ -575,7 +606,13 @@ async def _process_event_callback_impl(payload: dict[str, Any]) -> None:
                         text_override=normalized_text,
                         bot_user_ids=bot_user_ids,
                     )
-                    await messenger.process_inbound(message)
+                    result = await messenger.process_inbound(message)
+                    _log_dropped_inbound_result(
+                        result=result,
+                        channel_id=channel_id,
+                        thread_ts=thread_ts,
+                        message_type=MessageType.MENTION,
+                    )
                 return
 
             if message_ts and channel_id and await is_duplicate_message(channel_id, message_ts):
@@ -594,7 +631,13 @@ async def _process_event_callback_impl(payload: dict[str, Any]) -> None:
                 message = _build_inbound_message(
                     event, team_id, MessageType.THREAD_REPLY, bot_user_ids=bot_user_ids,
                 )
-                await messenger.process_inbound(message)
+                result = await messenger.process_inbound(message)
+                _log_dropped_inbound_result(
+                    result=result,
+                    channel_id=channel_id,
+                    thread_ts=thread_ts,
+                    message_type=MessageType.THREAD_REPLY,
+                )
             return
 
     if inner_type == "app_mention":
@@ -628,7 +671,13 @@ async def _process_event_callback_impl(payload: dict[str, Any]) -> None:
                 thread_ts_override=lock_thread_ts,
                 bot_user_ids=bot_user_ids,
             )
-            await messenger.process_inbound(message)
+            result = await messenger.process_inbound(message)
+            _log_dropped_inbound_result(
+                result=result,
+                channel_id=channel_id,
+                thread_ts=thread_ts,
+                message_type=MessageType.MENTION,
+            )
 
 
 def _build_inbound_message(
