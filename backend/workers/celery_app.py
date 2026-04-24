@@ -79,6 +79,7 @@ celery_app = Celery(
         "workers.tasks.bulk_operations",
         "workers.tasks.monitoring",
         "workers.tasks.daily_digest",
+        "workers.tasks.content_group_summaries",
     ],
 )
 

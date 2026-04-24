@@ -495,6 +495,7 @@ class ChatOrchestrator:
         source_user_email: str | None = None,
         workflow_context: dict[str, Any] | None = None,
         source: str = "web",
+        external_context_message: str | None = None,
     ) -> None:
         """
         Initialize the orchestrator.
@@ -529,6 +530,7 @@ class ChatOrchestrator:
         self.source_user_email = source_user_email
         self.workflow_context = workflow_context
         self.source: str = source
+        self.external_context_message = external_context_message
         self._llm_config: LLMConfig | None = None
         self._adapter: AnthropicAdapter | OpenAIAdapter | None = None
         # Track if we've saved the assistant message (for early save during tool execution)
@@ -1078,10 +1080,19 @@ class ChatOrchestrator:
             text_for_model, attachment_ids,
         )
 
-        # Add user message to context for Claude
-        messages: list[dict[str, Any]] = history + [
-            {"role": "user", "content": user_content}
-        ]
+        # Add context and user message to context for Claude.
+        messages: list[dict[str, Any]] = list(history)
+        if self.external_context_message:
+            messages.append(
+                {
+                    "role": "user",
+                    "content": (
+                        "Channel/campfire context block (summaries only; may be stale):\n"
+                        f"{self.external_context_message}"
+                    ),
+                }
+            )
+        messages.append({"role": "user", "content": user_content})
         cross_conversation_context_message: str | None = None
         slack_recent_channel_context_message: str | None = None
 

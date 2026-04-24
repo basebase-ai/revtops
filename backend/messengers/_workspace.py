@@ -1075,6 +1075,43 @@ class WorkspaceMessenger(BaseMessenger):
             conversation_id: str = await self.find_or_create_conversation(
                 organization_id, user, message,
             )
+            content_group_id: str | None = None
+            context_pack_text: str | None = None
+            try:
+                from services.content_groups import (
+                    associate_conversation_to_content_group,
+                    resolve_content_group_from_message,
+                )
+                from services.context_pack import build_incoming_message_context_pack
+
+                content_group = await resolve_content_group_from_message(
+                    message_ctx=message.messenger_context,
+                    organization_id=organization_id,
+                    platform=self.meta.slug,
+                )
+                if content_group is not None:
+                    content_group_id = str(content_group.id)
+                    await associate_conversation_to_content_group(
+                        organization_id=organization_id,
+                        conversation_id=conversation_id,
+                        content_group_id=content_group_id,
+                    )
+                    context_pack = await build_incoming_message_context_pack(
+                        organization_id=organization_id,
+                        content_group_id=content_group_id,
+                    )
+                    context_pack_text = (
+                        str(context_pack.get("context_text"))
+                        if context_pack and context_pack.get("context_text")
+                        else None
+                    )
+            except Exception:
+                logger.warning(
+                    "[%s] content_group_resolution_failed conversation_id=%s",
+                    self.meta.slug,
+                    conversation_id,
+                    exc_info=True,
+                )
 
             ctx: dict[str, Any] = message.messenger_context
             slack_user_email: str | None = ctx.get("user_email")
@@ -1127,6 +1164,7 @@ class WorkspaceMessenger(BaseMessenger):
                 source=self.meta.slug,
                 timezone=ctx.get("timezone"),
                 local_time=ctx.get("local_time"),
+                external_context_message=context_pack_text,
             )
 
             if self.meta.response_mode.value == "streaming":

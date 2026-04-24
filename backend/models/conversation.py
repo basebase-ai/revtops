@@ -40,6 +40,7 @@ class Conversation(Base):
     __tablename__ = "conversations"
     __table_args__ = (
         Index("ix_conversations_source_channel", "source", "source_channel_id"),
+        Index("ix_conversations_content_group", "content_group_id"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -63,6 +64,9 @@ class Conversation(Base):
     source_user_id: Mapped[Optional[str]] = mapped_column(
         String(100), nullable=True
     )  # External user ID (e.g., Slack user ID)
+    content_group_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("content_groups.id", ondelete="SET NULL"), nullable=True
+    )
     # All known RevTops users who have participated in this conversation.
     participating_user_ids: Mapped[list[uuid.UUID]] = mapped_column(
         ARRAY(UUID(as_uuid=True)), nullable=False, default=list

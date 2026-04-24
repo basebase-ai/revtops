@@ -228,9 +228,25 @@ async def _sync_integration(
 
         await _clear_last_errors_for_integration(organization_id, provider, user_id)
 
+        sync_started_at: datetime = datetime.utcnow()
         await connector.mark_sync_started()
         counts = await connector.sync_all()
         await connector.update_last_sync(counts)
+
+        try:
+            await _dispatch_content_group_summaries_for_sync_window(
+                organization_id=organization_id,
+                provider=provider,
+                sync_started_at=sync_started_at,
+                sync_completed_at=datetime.utcnow(),
+            )
+        except Exception as summary_dispatch_err:
+            logger.warning(
+                "Content-group summary dispatch failed org=%s provider=%s error=%s",
+                organization_id,
+                provider,
+                summary_dispatch_err,
+            )
 
         # Generate embeddings for newly synced activities
         try:
@@ -330,6 +346,138 @@ async def _sync_integration(
             "provider": provider,
             "error": error_msg,
         }
+
+
+async def _dispatch_content_group_summaries_for_sync_window(
+    *,
+    organization_id: str,
+    provider: str,
+    sync_started_at: datetime,
+    sync_completed_at: datetime,
+) -> None:
+    if provider not in {"slack", "teams"}:
+        return
+
+    from sqlalchemy import distinct, select
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+    from models.activity import Activity
+    from models.content_group import ContentGroup
+    from models.database import get_session
+    from workers.tasks.content_group_summaries import generate_for_org_provider_sync
+
+    org_uuid = UUID(organization_id)
+    async with get_session(organization_id=organization_id) as session:
+        stmt = (
+            select(
+                distinct(Activity.custom_fields["workspace_id"].astext),
+                Activity.custom_fields["channel_id"].astext,
+                Activity.custom_fields["thread_ts"].astext,
+                Activity.custom_fields["channel_name"].astext,
+            )
+            .where(Activity.organization_id == org_uuid)
+            .where(Activity.source_system == provider)
+            .where(Activity.synced_at.is_not(None))
+            .where(Activity.synced_at >= sync_started_at)
+            .where(Activity.synced_at <= sync_completed_at)
+            .where(Activity.custom_fields.is_not(None))
+            .where(Activity.custom_fields["channel_id"].astext.is_not(None))
+        )
+        rows = (await session.execute(stmt)).all()
+        content_group_ids: list[str] = []
+        for workspace_id, channel_id, thread_id, channel_name in rows:
+            if not channel_id:
+                continue
+            thread_id_str = str(thread_id) if thread_id else None
+            name = str(channel_name) if channel_name else None
+            workspace_id_str = str(workspace_id) if workspace_id else None
+            existing: ContentGroup | None = None
+            if thread_id_str is None:
+                existing_stmt = (
+                    select(ContentGroup)
+                    .where(ContentGroup.organization_id == org_uuid)
+                    .where(ContentGroup.platform == provider)
+                    .where(ContentGroup.external_group_id == str(channel_id))
+                    .where(ContentGroup.external_thread_id.is_(None))
+                    .order_by(ContentGroup.updated_at.desc())
+                    .limit(1)
+                )
+                existing = (await session.execute(existing_stmt)).scalar_one_or_none()
+            if existing is not None:
+                await session.execute(
+                    ContentGroup.__table__.update()
+                    .where(ContentGroup.id == existing.id)
+                    .values(name=name, is_active=True, updated_at=datetime.utcnow())
+                )
+                cg_id = existing.id
+            else:
+                if workspace_id_str is None:
+                    logger.info(
+                        "Skipping content-group insert during sync summary dispatch: missing workspace_id org=%s provider=%s channel_id=%s thread_id=%s",
+                        organization_id,
+                        provider,
+                        str(channel_id),
+                        thread_id_str,
+                    )
+                    continue
+                insert_stmt = pg_insert(ContentGroup).values(
+                    organization_id=org_uuid,
+                    platform=provider,
+                    workspace_id=workspace_id_str,
+                    external_group_id=str(channel_id),
+                    external_thread_id=thread_id_str,
+                    name=name,
+                )
+                if thread_id_str is None:
+                    upsert_stmt = insert_stmt.on_conflict_do_update(
+                        index_elements=[
+                            "organization_id",
+                            "platform",
+                            "workspace_id",
+                            "external_group_id",
+                        ],
+                        index_where=ContentGroup.external_thread_id.is_(None),
+                        set_={
+                            "name": name,
+                            "is_active": True,
+                            "updated_at": datetime.utcnow(),
+                        },
+                    ).returning(ContentGroup.id)
+                else:
+                    upsert_stmt = insert_stmt.on_conflict_do_update(
+                        constraint="uq_content_groups_key",
+                        set_={
+                            "name": name,
+                            "is_active": True,
+                            "updated_at": datetime.utcnow(),
+                        },
+                    ).returning(ContentGroup.id)
+                cg_id = (await session.execute(upsert_stmt)).scalar_one()
+            content_group_ids.append(str(cg_id))
+        await session.commit()
+
+    if not content_group_ids:
+        logger.info(
+            "No touched content groups for summary generation org=%s provider=%s window=%s..%s",
+            organization_id,
+            provider,
+            sync_started_at.isoformat(),
+            sync_completed_at.isoformat(),
+        )
+        return
+
+    logger.info(
+        "Dispatching content-group summary task org=%s provider=%s content_group_count=%d",
+        organization_id,
+        provider,
+        len(content_group_ids),
+    )
+    generate_for_org_provider_sync.delay(
+        organization_id,
+        provider,
+        content_group_ids,
+        sync_completed_at.replace(tzinfo=timezone.utc).isoformat(),
+    )
 
 
 async def _get_all_active_integrations() -> list[dict[str, str | None]]:
