@@ -133,6 +133,38 @@ def markdown_to_mrkdwn(text: str) -> tuple[str, Optional[list[dict[str, Any]]]]:
 
     return (text, out_blocks)
 
+
+def _extract_fallback_text_from_blocks(blocks: list[dict[str, Any]]) -> str:
+    """Best-effort plain-text fallback extracted from Slack blocks."""
+
+    max_length: int = 280
+    fragments: list[str] = []
+
+    def _walk(node: Any) -> None:
+        if len(" ".join(fragments)) >= max_length:
+            return
+        if isinstance(node, dict):
+            text_value = node.get("text")
+            if isinstance(text_value, str) and text_value.strip():
+                fragments.append(text_value.strip())
+            for key in ("elements", "fields", "accessory", "title"):
+                child = node.get(key)
+                if child is not None:
+                    _walk(child)
+            for value in node.values():
+                if isinstance(value, (dict, list)):
+                    _walk(value)
+            return
+        if isinstance(node, list):
+            for child in node:
+                _walk(child)
+
+    _walk(blocks)
+    fallback: str = " ".join(fragment for fragment in fragments if fragment).strip()
+    if len(fallback) > max_length:
+        fallback = f"{fallback[: max_length - 3].rstrip()}..."
+    return fallback
+
 from api.websockets import broadcast_sync_progress
 from connectors.base import BaseConnector, ExternalConnectionRevokedError, build_connection_removed_message
 from connectors.registry import (
@@ -1539,9 +1571,32 @@ Returns normalized messages for one channel since a cutoff (does not write to th
         else:
             formatted_text, _ = markdown_to_mrkdwn(text)
 
+        normalized_text: str = formatted_text.strip()
+        if not normalized_text and blocks:
+            normalized_text = _extract_fallback_text_from_blocks(blocks)
+            if normalized_text:
+                logger.info(
+                    "[SlackConnector] Derived fallback text from blocks for chat.postMessage channel=%s chars=%d",
+                    channel,
+                    len(normalized_text),
+                )
+            else:
+                normalized_text = "Notification"
+                logger.warning(
+                    "[SlackConnector] Missing fallback text and no extractable text in blocks; using default fallback channel=%s",
+                    channel,
+                )
+        if not normalized_text:
+            logger.error(
+                "[SlackConnector] Refusing to post empty Slack message channel=%s has_blocks=%s",
+                channel,
+                bool(blocks),
+            )
+            raise ValueError("Slack message text must be non-empty")
+
         payload: dict[str, Any] = {
             "channel": channel,
-            "text": formatted_text,
+            "text": normalized_text,
         }
         
         if thread_ts:

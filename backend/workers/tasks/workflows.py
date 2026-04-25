@@ -1954,6 +1954,7 @@ async def _action_send_slack(
     
     channel = params.get("channel", "")
     message = params.get("message", "")
+    blocks = params.get("blocks")
     thread_ts = params.get("thread_ts")
     org_id = context.get("organization_id", "")
     
@@ -1963,10 +1964,10 @@ async def _action_send_slack(
             "error": "No channel specified",
         }
     
-    if not message:
+    if not str(message).strip() and not blocks:
         return {
             "status": "failed",
-            "error": "No message specified",
+            "error": "No message or blocks specified",
         }
 
     allowed_channels = _extract_allowed_slack_channels(workflow)
@@ -2041,6 +2042,7 @@ async def _action_send_slack(
             channel=channel,
             text=message,
             thread_ts=thread_ts,
+            blocks=blocks,
         )
         
         logger.info(f"Posted to Slack channel {channel}: {result.get('ts')}")

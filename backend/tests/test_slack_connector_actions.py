@@ -2,6 +2,8 @@ import asyncio
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
+import pytest
+
 from connectors.slack import SlackConnector
 
 
@@ -388,6 +390,59 @@ def test_post_message_retries_with_org_credentials_on_channel_not_found(monkeypa
     assert result["ok"] is True
     assert calls == ["11111111-1111-1111-1111-111111111111", None]
     assert connector.user_id == "11111111-1111-1111-1111-111111111111"
+
+
+def test_post_message_uses_fallback_text_extracted_from_blocks(monkeypatch) -> None:
+    connector = SlackConnector(organization_id="00000000-0000-0000-0000-000000000001")
+
+    captured: dict[str, object] = {}
+
+    async def _fake_make_request(method: str, endpoint: str, **kwargs: object):
+        captured["method"] = method
+        captured["endpoint"] = endpoint
+        captured["json_data"] = kwargs.get("json_data")
+        return {"ok": True, "channel": "C999", "ts": "1.2", "message": {"text": "hello"}}
+
+    monkeypatch.setattr(connector, "_make_request", _fake_make_request)
+
+    result = asyncio.run(
+        connector.post_message(
+            "C999",
+            "",
+            blocks=[
+                {
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": "*Deployment finished*"},
+                }
+            ],
+        )
+    )
+
+    assert result["ok"] is True
+    assert captured["method"] == "POST"
+    assert captured["endpoint"] == "chat.postMessage"
+    assert captured["json_data"] == {
+        "channel": "C999",
+        "text": "*Deployment finished*",
+        "blocks": [
+            {
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": "*Deployment finished*"},
+            }
+        ],
+    }
+
+
+def test_post_message_rejects_empty_text_when_blocks_missing(monkeypatch) -> None:
+    connector = SlackConnector(organization_id="00000000-0000-0000-0000-000000000001")
+
+    async def _fake_make_request(method: str, endpoint: str, **kwargs: object):
+        raise AssertionError("chat.postMessage should not be called for empty message payloads")
+
+    monkeypatch.setattr(connector, "_make_request", _fake_make_request)
+
+    with pytest.raises(ValueError, match="non-empty"):
+        asyncio.run(connector.post_message("C999", ""))
 
 
 def test_send_direct_message_retries_other_slack_identities_on_user_not_found(monkeypatch) -> None:
