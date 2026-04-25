@@ -46,6 +46,10 @@ def downgrade() -> None:
     op.drop_index("ux_memories_channel_category", table_name="memories")
     op.drop_index("ix_memories_scope_lookup", table_name="memories")
 
+    # Channel-scoped rows created by this migration can have entity_id=NULL.
+    # Remove them before restoring the original NOT NULL constraint.
+    op.execute(sa.text("DELETE FROM memories WHERE scope_type IS NOT NULL"))
+
     op.alter_column("memories", "entity_id", existing_type=sa.UUID(), nullable=False)
 
     op.drop_column("memories", "scope_channel_id")

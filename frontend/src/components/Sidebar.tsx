@@ -1349,6 +1349,7 @@ function ChannelPersonalityPanel({
           : await apiRequest<{ status: string; memory_id: string }>(endpoint, { method: 'DELETE' });
         if (result.error) {
           setError(result.error);
+          setIsDirty(false);
         } else {
           lastSavedRef.current = trimmed;
           setIsDirty(false);
