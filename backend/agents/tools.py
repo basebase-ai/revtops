@@ -1202,9 +1202,13 @@ async def _run_on_connector(
 
     from services.action_ledger import record_intent, record_outcome
 
+    ledger_action_params: dict[str, Any] = {
+        key: value for key, value in action_params.items() if key != "_audit_logged"
+    }
+
     change_id = await record_intent(
         organization_id, user_id, context, connector,
-        dispatch_type="action", operation=action, data=action_params,
+        dispatch_type="action", operation=action, data=ledger_action_params,
         connector_instance=instance,
     )
     cross_user_warning = _build_cross_user_connector_warning(connector, instance, user_id)
