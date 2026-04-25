@@ -170,13 +170,6 @@ export default function CROMetrics() {
       ? `$${(n / 1_000).toFixed(0)}K`
       : `$${Math.round(n)}`;
 
-  const boobLeftDays = useMemo(() => {
-    const now = new Date();
-    const target = new Date("2026-09-10T00:00:00");
-    const msPerDay = 1000 * 60 * 60 * 24;
-    return Math.max(0, Math.ceil((target.getTime() - now.getTime()) / msPerDay));
-  }, []);
-
   return (
     <div style={{ padding: "24px 32px", maxWidth: 1200, margin: "0 auto", fontFamily: "system-ui, sans-serif" }}>
       {/* Period selector */}
@@ -216,7 +209,6 @@ export default function CROMetrics() {
             <KPICard label="Weighted Pipeline" value={fmt(summaryRow.weighted_value ?? 0)} />
             <KPICard label="Avg Deal Size" value={fmt(summaryRow.avg_deal_size ?? 0)} />
             <KPICard label="Win Rate" value={winRow.win_rate_pct ?? 0} suffix="%" />
-            <KPICard label="🍒 Boob left" value={boobLeftDays} suffix=" days" />
           </div>
 
           {/* Deals by stage chart */}
