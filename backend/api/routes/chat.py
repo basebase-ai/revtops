@@ -595,8 +595,13 @@ async def list_conversations(
         # can keep pagination controls enabled immediately while we reconcile
         # Slack-only rows that may need to be merged into the visible page.
         slack_user_ids = await _get_slack_user_ids(auth, session=session)
+        # Slack-only rows must be considered before advancing cursor pagination.
+        # For non-cursor requests, we only reconcile on the first page (offset=0)
+        # to avoid reordering/duplication issues on legacy offset pages. Older
+        # clients should refresh to cursor-based pagination for fully consistent
+        # Slack-aware paging across pages.
         should_merge_slack = bool(slack_user_ids) and (
-            len(conversations) < limit or has_more or not cursor
+            cursor is not None or offset == 0
         )
 
         if should_merge_slack:
