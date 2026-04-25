@@ -1,0 +1,53 @@
+"""Add channel memory scope columns.
+
+Revision ID: 134_chan_mem_scope
+Revises: 133_org_members_self_edit
+Create Date: 2026-04-25
+"""
+
+from __future__ import annotations
+
+from typing import Sequence, Union
+
+from alembic import op
+import sqlalchemy as sa
+
+revision: str = "134_chan_mem_scope"
+down_revision: Union[str, Sequence[str], None] = "133_org_members_self_edit"
+branch_labels: Union[str, Sequence[str], None] = None
+depends_on: Union[str, Sequence[str], None] = None
+
+assert len(revision) <= 32
+assert not isinstance(down_revision, str) or len(down_revision) <= 32
+
+
+def upgrade() -> None:
+    op.add_column("memories", sa.Column("scope_type", sa.String(length=30), nullable=True))
+    op.add_column("memories", sa.Column("scope_source", sa.String(length=30), nullable=True))
+    op.add_column("memories", sa.Column("scope_channel_id", sa.String(length=255), nullable=True))
+
+    op.alter_column("memories", "entity_id", existing_type=sa.UUID(), nullable=True)
+
+    op.create_index(
+        "ix_memories_scope_lookup",
+        "memories",
+        ["organization_id", "scope_type", "scope_source", "scope_channel_id", "category"],
+        unique=False,
+    )
+    op.create_index(
+        "ux_memories_channel_category",
+        "memories",
+        ["organization_id", "scope_type", "scope_source", "scope_channel_id", "category"],
+        unique=True,
+    )
+
+
+def downgrade() -> None:
+    op.drop_index("ux_memories_channel_category", table_name="memories")
+    op.drop_index("ix_memories_scope_lookup", table_name="memories")
+
+    op.alter_column("memories", "entity_id", existing_type=sa.UUID(), nullable=False)
+
+    op.drop_column("memories", "scope_channel_id")
+    op.drop_column("memories", "scope_source")
+    op.drop_column("memories", "scope_type")

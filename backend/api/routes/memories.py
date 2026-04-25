@@ -16,7 +16,19 @@ logger = logging.getLogger(__name__)
 
 GLOBAL_COMMAND_CATEGORY = "global_commands"
 GLOBAL_COMMAND_CATEGORY_ALIASES = {"global_command", "global_commands"}
-GLOBAL_COMMAND_MAX_LENGTH = 400
+GLOBAL_COMMAND_MAX_LENGTH = 800
+CHANNEL_PERSONALITY_CATEGORY = "channel_personality"
+CHANNEL_PERSONALITY_MAX_LENGTH = GLOBAL_COMMAND_MAX_LENGTH
+
+
+def normalize_channel_scope_channel_id(source: str, channel_id: str) -> str:
+    normalized_source = source.strip().lower()
+    normalized_channel_id = channel_id.strip()
+    if not normalized_source or not normalized_channel_id:
+        raise HTTPException(status_code=400, detail="source and channel_id are required")
+    if normalized_source == "slack":
+        return normalized_channel_id.split(":", maxsplit=1)[0].strip()
+    return normalized_channel_id
 
 
 def normalize_memory_category(category: str | None) -> str | None:
@@ -32,9 +44,26 @@ def normalize_memory_category(category: str | None) -> str | None:
 
 def validate_memory_content(content: str, category: str | None) -> None:
     if category == GLOBAL_COMMAND_CATEGORY and len(content) > GLOBAL_COMMAND_MAX_LENGTH:
+        logger.warning(
+            "[Memories API] Validation failed category=%s length=%s max=%s",
+            category,
+            len(content),
+            GLOBAL_COMMAND_MAX_LENGTH,
+        )
         raise HTTPException(
             status_code=400,
             detail=f"Global command memories must be {GLOBAL_COMMAND_MAX_LENGTH} characters or fewer",
+        )
+    if category == CHANNEL_PERSONALITY_CATEGORY and len(content) > CHANNEL_PERSONALITY_MAX_LENGTH:
+        logger.warning(
+            "[Memories API] Validation failed category=%s length=%s max=%s",
+            category,
+            len(content),
+            CHANNEL_PERSONALITY_MAX_LENGTH,
+        )
+        raise HTTPException(
+            status_code=400,
+            detail=f"Channel personality memories must be {CHANNEL_PERSONALITY_MAX_LENGTH} characters or fewer",
         )
 
 
@@ -89,6 +118,7 @@ async def list_memories(organization_id: str, user_id: str) -> MemoryDashboardRe
             .where(
                 Memory.organization_id == org_uuid,
                 Memory.created_by_user_id == user_uuid,
+                Memory.entity_type == "user",
             )
             .order_by(Memory.updated_at.desc().nullslast(), Memory.created_at.desc().nullslast())
         )
@@ -205,4 +235,153 @@ async def delete_user_memory(organization_id: str, memory_id: str, user_id: str)
         await session.commit()
 
     logger.info("[Memories API] Deleted memory %s for user %s", memory_id, user_id)
+    return {"status": "deleted", "memory_id": memory_id}
+
+
+@router.get("/{organization_id}/channel", response_model=MemoryResponse | None)
+async def get_channel_memory(organization_id: str, source: str, channel_id: str) -> MemoryResponse | None:
+    """Get channel personality memory by source + normalized channel identifier."""
+    try:
+        org_uuid = UUID(organization_id)
+        normalized_channel_id = normalize_channel_scope_channel_id(source, channel_id)
+        normalized_source = source.strip().lower()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid ID format")
+
+    async with get_session(organization_id=organization_id) as session:
+        result = await session.execute(
+            select(Memory)
+            .where(
+                Memory.organization_id == org_uuid,
+                Memory.scope_type == "channel",
+                Memory.scope_source == normalized_source,
+                Memory.scope_channel_id == normalized_channel_id,
+                Memory.category == CHANNEL_PERSONALITY_CATEGORY,
+            )
+            .order_by(Memory.updated_at.desc().nullslast(), Memory.created_at.desc().nullslast())
+            .limit(1)
+        )
+        memory = result.scalar_one_or_none()
+        if not memory:
+            logger.info(
+                "[Memories API] Channel personality miss org=%s source=%s channel_id=%s",
+                organization_id,
+                normalized_source,
+                normalized_channel_id,
+            )
+            return None
+
+        logger.info(
+            "[Memories API] Channel personality hit org=%s source=%s channel_id=%s memory_id=%s",
+            organization_id,
+            normalized_source,
+            normalized_channel_id,
+            memory.id,
+        )
+        return _build_memory_response(memory)
+
+
+@router.put("/{organization_id}/channel", response_model=MemoryResponse)
+async def upsert_channel_memory(
+    organization_id: str,
+    source: str,
+    channel_id: str,
+    request: UpdateMemoryRequest,
+) -> MemoryResponse:
+    """Create/update channel personality memory by source + channel identifier."""
+    content = request.content.strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="content is required")
+    validate_memory_content(content, CHANNEL_PERSONALITY_CATEGORY)
+
+    try:
+        org_uuid = UUID(organization_id)
+        normalized_source = source.strip().lower()
+        normalized_channel_id = normalize_channel_scope_channel_id(source, channel_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid ID format")
+
+    async with get_session(organization_id=organization_id) as session:
+        result = await session.execute(
+            select(Memory).where(
+                Memory.organization_id == org_uuid,
+                Memory.scope_type == "channel",
+                Memory.scope_source == normalized_source,
+                Memory.scope_channel_id == normalized_channel_id,
+                Memory.category == CHANNEL_PERSONALITY_CATEGORY,
+            )
+        )
+        memory = result.scalar_one_or_none()
+        if memory:
+            memory.content = content
+            action = "updated"
+        else:
+            memory = Memory(
+                entity_type="channel",
+                entity_id=None,
+                organization_id=org_uuid,
+                category=CHANNEL_PERSONALITY_CATEGORY,
+                content=content,
+                scope_type="channel",
+                scope_source=normalized_source,
+                scope_channel_id=normalized_channel_id,
+                created_by_user_id=None,
+            )
+            session.add(memory)
+            action = "created"
+
+        await session.commit()
+        await session.refresh(memory)
+        logger.info(
+            "[Memories API] Channel personality %s org=%s source=%s channel_id=%s memory_id=%s",
+            action,
+            organization_id,
+            normalized_source,
+            normalized_channel_id,
+            memory.id,
+        )
+        return _build_memory_response(memory)
+
+
+@router.delete("/{organization_id}/channel")
+async def delete_channel_memory(organization_id: str, source: str, channel_id: str) -> dict[str, str]:
+    """Delete channel personality memory by source + channel identifier."""
+    try:
+        org_uuid = UUID(organization_id)
+        normalized_source = source.strip().lower()
+        normalized_channel_id = normalize_channel_scope_channel_id(source, channel_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid ID format")
+
+    async with get_session(organization_id=organization_id) as session:
+        result = await session.execute(
+            select(Memory).where(
+                Memory.organization_id == org_uuid,
+                Memory.scope_type == "channel",
+                Memory.scope_source == normalized_source,
+                Memory.scope_channel_id == normalized_channel_id,
+                Memory.category == CHANNEL_PERSONALITY_CATEGORY,
+            )
+        )
+        memory = result.scalar_one_or_none()
+        if not memory:
+            logger.info(
+                "[Memories API] Channel personality delete miss org=%s source=%s channel_id=%s",
+                organization_id,
+                normalized_source,
+                normalized_channel_id,
+            )
+            raise HTTPException(status_code=404, detail="Memory not found")
+
+        memory_id = str(memory.id)
+        await session.delete(memory)
+        await session.commit()
+
+    logger.info(
+        "[Memories API] Channel personality deleted org=%s source=%s channel_id=%s memory_id=%s",
+        organization_id,
+        normalized_source,
+        normalized_channel_id,
+        memory_id,
+    )
     return {"status": "deleted", "memory_id": memory_id}

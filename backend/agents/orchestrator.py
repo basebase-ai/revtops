@@ -139,6 +139,30 @@ WHERE source_system = 'slack'
 The activities table contains synced Slack messages with these relevant custom_fields keys: channel_id, channel_name, user_id, thread_ts."""
 
 
+def _normalize_channel_scope_id(source: str | None, source_channel_id: str | None) -> str | None:
+    """Normalize channel identifier for channel-scoped memory lookups."""
+    if not source or not source_channel_id:
+        return None
+    normalized_source = source.strip().lower()
+    normalized_channel_id = str(source_channel_id).strip()
+    if not normalized_channel_id:
+        return None
+    if normalized_source == "slack":
+        return normalized_channel_id.split(":", maxsplit=1)[0].strip() or None
+    return normalized_channel_id
+
+
+def _is_private_memory_context(*, source: str | None, scope: str | None, normalized_channel_id: str | None) -> bool:
+    """Global-command memories should apply only to private web chats and Slack DMs."""
+    normalized_source = (source or "").strip().lower()
+    normalized_scope = (scope or "").strip().lower()
+    if normalized_source == "web" and normalized_scope == "private":
+        return True
+    if normalized_source == "slack" and (normalized_channel_id or "").startswith("D"):
+        return True
+    return False
+
+
 def _should_include_cross_conversation_history(user_message: str) -> bool:
     """Return True when a user explicitly asks for cross-conversation context."""
     if not user_message:
@@ -737,6 +761,8 @@ class ChatOrchestrator:
             "phone_number": getattr(self, "_phone_number", None),
             "participant_job_memories": [],
             "global_command_memory": None,
+            "channel_personality_memory": None,
+            "is_private_memory_context": False,
         }
 
         try:
@@ -753,13 +779,34 @@ class ChatOrchestrator:
                 all_memories: list[Memory] = list(result.scalars().all())
 
                 participant_user_ids: list[UUID] = []
+                conversation_scope: str | None = None
+                conversation_source: str | None = None
+                normalized_channel_id: str | None = None
                 if self.conversation_id:
                     conversation_result = await session.execute(
-                        select(Conversation.participating_user_ids)
+                        select(
+                            Conversation.participating_user_ids,
+                            Conversation.scope,
+                            Conversation.source,
+                            Conversation.source_channel_id,
+                        )
                         .where(Conversation.id == UUID(self.conversation_id))
                         .limit(1)
                     )
-                    participant_user_ids = list(conversation_result.scalar_one_or_none() or [])
+                    conversation_row = conversation_result.one_or_none()
+                    if conversation_row:
+                        participant_user_ids = list(conversation_row[0] or [])
+                        conversation_scope = conversation_row[1]
+                        conversation_source = conversation_row[2]
+                        normalized_channel_id = _normalize_channel_scope_id(
+                            conversation_source,
+                            conversation_row[3],
+                        )
+                        profile["is_private_memory_context"] = _is_private_memory_context(
+                            source=conversation_source,
+                            scope=conversation_scope,
+                            normalized_channel_id=normalized_channel_id,
+                        )
 
                 user_uuid: UUID | None = self._resolve_current_user_uuid()
                 org_uuid: UUID = UUID(self.organization_id)  # type: ignore[arg-type]
@@ -871,6 +918,27 @@ class ChatOrchestrator:
                             self.conversation_id,
                             missing_members,
                         )
+
+                if normalized_channel_id and conversation_source:
+                    normalized_source: str = conversation_source.strip().lower()
+                    channel_memory_result = await session.execute(
+                        select(Memory)
+                        .where(
+                            Memory.organization_id == org_uuid,
+                            Memory.scope_type == "channel",
+                            Memory.scope_source == normalized_source,
+                            Memory.scope_channel_id == normalized_channel_id,
+                            Memory.category == "channel_personality",
+                        )
+                        .order_by(Memory.updated_at.desc().nullslast(), Memory.created_at.desc().nullslast())
+                        .limit(1)
+                    )
+                    channel_personality_memory = channel_memory_result.scalar_one_or_none()
+                    if channel_personality_memory:
+                        profile["channel_personality_memory"] = {
+                            "id": str(channel_personality_memory.id),
+                            "content": channel_personality_memory.content,
+                        }
 
         except Exception:
             logger.warning("Failed to load context profile", exc_info=True)
@@ -1225,9 +1293,11 @@ class ChatOrchestrator:
             reports_to_name: str | None = profile["reports_to_name"]
             phone_number: str | None = profile["phone_number"]
             global_command_memory: dict[str, str] | None = profile.get("global_command_memory")
+            channel_personality_memory: dict[str, str] | None = profile.get("channel_personality_memory")
+            is_private_memory_context: bool = bool(profile.get("is_private_memory_context"))
 
             has_any_context: bool = bool(
-                user_memories or job_memories or global_command_memory
+                user_memories or job_memories or global_command_memory or channel_personality_memory
                 or membership_title or reports_to_name or phone_number
             )
 
@@ -1236,9 +1306,12 @@ class ChatOrchestrator:
                 system_prompt += "\nThese are persisted facts about the user and their role."
                 system_prompt += " Follow preferences. Use manage_memory with action=\"update\" or action=\"delete\" and the [memory_id] shown in brackets to manage entries.\n"
 
-            if global_command_memory:
+            if global_command_memory and is_private_memory_context:
                 system_prompt += "\n## Global Command (Always Apply)\n"
                 system_prompt += f"- [{global_command_memory['id']}] {global_command_memory['content']}\n"
+            if channel_personality_memory:
+                system_prompt += "\n## Channel Personality (Always Apply in this channel)\n"
+                system_prompt += f"- [{channel_personality_memory['id']}] {channel_personality_memory['content']}\n"
 
             # -- User profile section --
             if user_memories or phone_number:
@@ -1277,7 +1350,7 @@ class ChatOrchestrator:
                         system_prompt += f"  - [{mem['id']}] {mem['content']}\n"
 
             # -- Profile completeness signal (guides context-gathering behaviour) --
-            is_private: bool = self.source in ("slack_dm", "web", "sms")
+            is_private: bool = is_private_memory_context
             if is_private:
                 completeness_parts: list[str] = []
 
