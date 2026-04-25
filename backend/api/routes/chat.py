@@ -337,9 +337,19 @@ async def _refresh_slack_channel_name(
 ) -> None:
     lock_key = f"chat:slack_channel_name_refresh_lock:{workspace_id}:{channel_id}"
     cache_key = _channel_cache_key(workspace_id, channel_id)
-    r = await _get_redis()
+    try:
+        r = await _get_redis()
+    except Exception:
+        return
 
-    if not await r.set(lock_key, "1", ex=_CHANNEL_NAME_SINGLE_FLIGHT_LOCK_SECONDS, nx=True):
+    try:
+        lock_acquired = await r.set(
+            lock_key, "1", ex=_CHANNEL_NAME_SINGLE_FLIGHT_LOCK_SECONDS, nx=True
+        )
+    except Exception:
+        return
+
+    if not lock_acquired:
         return
     try:
         connector = SlackConnector(organization_id=org_id, team_id=workspace_id)
@@ -379,7 +389,10 @@ async def _refresh_slack_channel_name(
             exc,
         )
     finally:
-        await r.delete(lock_key)
+        try:
+            await r.delete(lock_key)
+        except Exception:
+            pass
 
 
 async def _resolve_slack_channel_name(
@@ -583,7 +596,7 @@ async def list_conversations(
         # Slack-only rows that may need to be merged into the visible page.
         slack_user_ids = await _get_slack_user_ids(auth, session=session)
         should_merge_slack = bool(slack_user_ids) and (
-            len(conversations) < limit or has_more
+            len(conversations) < limit or has_more or not cursor
         )
 
         if should_merge_slack:

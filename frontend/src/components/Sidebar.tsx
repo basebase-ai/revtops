@@ -953,7 +953,7 @@ function ChatAccordion({
       }
       uncategorized.push(chat);
     }
-    const limit = 15;
+    const globalLimit = 50;
     const byNewest = (a: ChatSummary, b: ChatSummary): number => b.lastMessageAt.getTime() - a.lastMessageAt.getTime();
     const channelSections = Array.from(channels.entries())
       .map(([key, value]) => ({ key, label: value.label, chats: value.chats.sort(byNewest), newestTs: value.newestTs }))
@@ -963,11 +963,24 @@ function ChatAccordion({
       direct.length +
       uncategorized.length +
       channelSections.reduce((acc, c) => acc + c.chats.length, 0);
+    let remaining = globalLimit;
+    const take = (items: ChatSummary[]): ChatSummary[] => {
+      if (remaining <= 0) return [];
+      const selected = items.slice(0, remaining);
+      remaining -= selected.length;
+      return selected;
+    };
+    const limitedPinned = take(pinned.sort(byNewest));
+    const limitedDirect = take(direct.sort(byNewest));
+    const limitedChannels = channelSections
+      .map((section) => ({ ...section, chats: take(section.chats) }))
+      .filter((section) => section.chats.length > 0);
+    const limitedUncategorized = take(uncategorized.sort(byNewest));
     return {
-      pinned: pinned.sort(byNewest).slice(0, limit),
-      direct: direct.sort(byNewest).slice(0, limit),
-      uncategorized: uncategorized.sort(byNewest).slice(0, limit),
-      channels: channelSections.map((section) => ({ ...section, chats: section.chats.slice(0, limit) })),
+      pinned: limitedPinned,
+      direct: limitedDirect,
+      uncategorized: limitedUncategorized,
+      channels: limitedChannels,
       flattenCount,
     };
   }, [orderedChats, pinnedChatIds]);
