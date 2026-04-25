@@ -35,7 +35,7 @@ PROVIDER_BASE_URLS: dict[str, str] = {
 PROVIDER_DEFAULT_MODELS: dict[str, dict[str, str]] = {
     "anthropic": {"primary": "claude-opus-4-6", "cheap": "claude-haiku-4-5-20251001"},
     "minimax": {"primary": "MiniMax-M2.7", "cheap": "MiniMax-M2.7-highspeed"},
-    "openai": {"primary": "gpt-5", "cheap": "gpt-5-mini"},
+    "openai": {"primary": "gpt-5.5", "cheap": "gpt-5.5-mini"},
     "gemini": {"primary": "gemini-2.5-pro", "cheap": "gemini-2.5-flash"},
 }
 
@@ -405,9 +405,9 @@ class OpenAIAdapter:
 
     def _build_token_limit_kwargs(self, *, model: str, max_tokens: int) -> dict[str, int]:
         """Map token limit parameter name based on OpenAI model requirements."""
-        # Newer reasoning families (e.g. gpt-5 / o-series) reject `max_tokens`.
+        # Newer reasoning families (e.g. gpt-5.5 / o-series) reject `max_tokens`.
         normalized_model: str = model.strip().lower().split("/")[-1]
-        uses_completion_tokens: bool = normalized_model.startswith(("gpt-5", "o"))
+        uses_completion_tokens: bool = normalized_model.startswith(("gpt-5.5", "o"))
         token_param_name: str = (
             "max_completion_tokens" if uses_completion_tokens else "max_tokens"
         )
@@ -431,14 +431,14 @@ class OpenAIAdapter:
             prefix, base_model = normalized_model.split("/", 1)
             prefix = f"{prefix}/"
 
-        if not base_model.startswith("gpt-5"):
+        if not base_model.startswith("gpt-5.5"):
             return []
 
         variants: list[str] = []
-        if base_model == "gpt-5":
-            variants.extend(["gpt-5-mini", "gpt-5-nano"])
-        elif base_model == "gpt-5-mini":
-            variants.append("gpt-5-nano")
+        if base_model == "gpt-5.5":
+            variants.extend(["gpt-5", "gpt-5.5-mini", "gpt-5.5-nano"])
+        elif base_model == "gpt-5.5-mini":
+            variants.append("gpt-5.5-nano")
 
         fallback_models: list[str] = [f"{prefix}{variant}" for variant in variants if variant != base_model]
         if fallback_models:

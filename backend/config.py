@@ -72,7 +72,7 @@ class Settings(BaseSettings):
 
     # OpenAI (for embeddings + research fallback)
     OPENAI_API_KEY: Optional[str] = None
-    OPENAI_RESEARCH_MODEL: str = "gpt-5"
+    OPENAI_RESEARCH_MODEL: str = "gpt-5.5"
 
     # MiniMax (Anthropic-compatible LLM provider)
     MINIMAX_API_KEY: Optional[str] = None

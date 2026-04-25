@@ -9,7 +9,7 @@ from services.llm_provider import (
 
 def test_infer_provider_from_model_name() -> None:
     assert _infer_provider_from_model_name("claude-haiku-4-5-20251001") == "anthropic"
-    assert _infer_provider_from_model_name("gpt-5-mini") == "openai"
+    assert _infer_provider_from_model_name("gpt-5.5-mini") == "openai"
     assert _infer_provider_from_model_name("gemini-2.5-flash") == "gemini"
     assert _infer_provider_from_model_name("MiniMax-M2.7-highspeed") == "minimax"
     assert _infer_provider_from_model_name("some-unknown-model") is None
@@ -27,8 +27,8 @@ def test_resolve_llm_config_uses_provider_defaults_for_mismatched_global_models(
     config = asyncio.run(resolve_llm_config(None))
 
     assert config.provider == "openai"
-    assert config.primary_model == "gpt-5"
-    assert config.cheap_model == "gpt-5-mini"
+    assert config.primary_model == "gpt-5.5"
+    assert config.cheap_model == "gpt-5.5-mini"
 
 
 def test_resolve_llm_config_logs_when_model_fallback_engaged(monkeypatch, caplog) -> None:
