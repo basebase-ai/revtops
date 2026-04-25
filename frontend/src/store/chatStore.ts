@@ -388,8 +388,18 @@ export const useChatStore = create<ChatState>()(
               email: string;
               avatar_url?: string | null;
             }>;
+            workspace_id?: string | null;
+            source?: string | null;
+            source_channel_id?: string | null;
+            normalized_channel_id?: string | null;
+            resolved_channel_name?: string | null;
+            group_bucket_type?: "pinned" | "direct" | "channel" | "uncategorized";
+            group_bucket_key?: string;
           }>;
           total: number;
+          next_cursor?: string | null;
+          has_more?: boolean;
+          server_time?: string;
         };
 
         const { data, error } = await apiRequest<ConversationApiResponse>(
@@ -420,6 +430,13 @@ export const useChatStore = create<ChatState>()(
             email: p.email,
             avatarUrl: p.avatar_url,
           })),
+          workspaceId: conv.workspace_id,
+          source: conv.source,
+          sourceChannelId: conv.source_channel_id,
+          normalizedChannelId: conv.normalized_channel_id,
+          resolvedChannelName: conv.resolved_channel_name,
+          groupBucketType: conv.group_bucket_type,
+          groupBucketKey: conv.group_bucket_key,
         });
 
         const recentChats: ChatSummary[] = conversations

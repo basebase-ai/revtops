@@ -45,7 +45,7 @@ export interface ChatMessage {
 
 export interface ConversationSummary {
   id: string;
-  user_id: string;
+  user_id: string | null;
   title: string | null;
   summary: string | null;
   created_at: string;
@@ -56,12 +56,22 @@ export interface ConversationSummary {
   participants?: Array<{ id: string; name: string | null; email: string; avatar_url?: string | null }>;
   match_snippet?: string | null;
   match_count?: number;
+  workspace_id?: string | null;
+  source?: string | null;
+  source_channel_id?: string | null;
+  normalized_channel_id?: string | null;
+  resolved_channel_name?: string | null;
+  group_bucket_type?: "pinned" | "direct" | "channel" | "uncategorized";
+  group_bucket_key?: string;
 }
 
 export interface ConversationListResponse {
   conversations: ConversationSummary[];
   total: number;
   search_term?: string | null;
+  next_cursor?: string | null;
+  has_more?: boolean;
+  server_time?: string;
 }
 
 export interface ConversationDetailResponse {
@@ -145,8 +155,14 @@ export async function listConversations(
   offset = 0,
   scope?: 'shared' | 'private' | 'mine',
   search?: string,
+  cursor?: string | null,
 ): Promise<ApiResponse<ConversationListResponse>> {
-  const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (cursor?.trim()) {
+    params.set('cursor', cursor.trim());
+  } else {
+    params.set('offset', String(offset));
+  }
   if (scope === 'shared' || scope === 'private') {
     params.set('scope', scope);
   }

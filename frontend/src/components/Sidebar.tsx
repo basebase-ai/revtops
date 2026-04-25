@@ -923,27 +923,77 @@ function ChatAccordion({
     return () => { if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current); };
   }, []);
 
-  const recentSidebarChats = useMemo(() => {
+  const groupedSidebarChats = useMemo(() => {
     const pinnedSet = new Set(pinnedChatIds);
     const sorted = [...orderedChats].sort(
       (a, b) => b.lastMessageAt.getTime() - a.lastMessageAt.getTime(),
     );
-    const pinned = sorted.filter((c) => pinnedSet.has(c.id));
-    const unpinned = sorted.filter((c) => !pinnedSet.has(c.id));
-    const merged = [...pinned, ...unpinned];
-    const limit = 15;
-    return merged.slice(0, limit);
+    const direct: ChatSummary[] = [];
+    const uncategorized: ChatSummary[] = [];
+    const channels = new Map<string, { label: string; chats: ChatSummary[]; newestTs: number }>();
+    const pinned: ChatSummary[] = [];
+    for (const chat of sorted) {
+      const ts = chat.lastMessageAt.getTime();
+      if (pinnedSet.has(chat.id)) pinned.push(chat);
+      const bucket = chat.groupBucketType ?? 'uncategorized';
+      if (bucket === 'direct') {
+        direct.push(chat);
+        continue;
+      }
+      if (bucket === 'channel' && chat.groupBucketKey) {
+        const current = channels.get(chat.groupBucketKey) ?? {
+          label: chat.resolvedChannelName ?? chat.normalizedChannelId ?? 'Channel',
+          chats: [],
+          newestTs: 0,
+        };
+        current.chats.push(chat);
+        current.newestTs = Math.max(current.newestTs, ts);
+        channels.set(chat.groupBucketKey, current);
+        continue;
+      }
+      uncategorized.push(chat);
+    }
+    const globalLimit = 50;
+    const byNewest = (a: ChatSummary, b: ChatSummary): number => b.lastMessageAt.getTime() - a.lastMessageAt.getTime();
+    const channelSections = Array.from(channels.entries())
+      .map(([key, value]) => ({ key, label: value.label, chats: value.chats.sort(byNewest), newestTs: value.newestTs }))
+      .sort((a, b) => b.newestTs - a.newestTs);
+    const flattenCount =
+      pinned.length +
+      direct.length +
+      uncategorized.length +
+      channelSections.reduce((acc, c) => acc + c.chats.length, 0);
+    let remaining = globalLimit;
+    const take = (items: ChatSummary[]): ChatSummary[] => {
+      if (remaining <= 0) return [];
+      const selected = items.slice(0, remaining);
+      remaining -= selected.length;
+      return selected;
+    };
+    const limitedPinned = take(pinned.sort(byNewest));
+    const limitedDirect = take(direct.sort(byNewest));
+    const limitedChannels = channelSections
+      .map((section) => ({ ...section, chats: take(section.chats) }))
+      .filter((section) => section.chats.length > 0);
+    const limitedUncategorized = take(uncategorized.sort(byNewest));
+    return {
+      pinned: limitedPinned,
+      direct: limitedDirect,
+      uncategorized: limitedUncategorized,
+      channels: limitedChannels,
+      flattenCount,
+    };
   }, [orderedChats, pinnedChatIds]);
 
   if (collapsed) return null;
 
-  const renderChatItem = (chat: ChatSummary): JSX.Element => {
+  const renderChatItem = (chat: ChatSummary, itemKey: string): JSX.Element => {
     const hasActiveTask = chat.id in activeTasksByConversation;
     const isUnread = unreadConversationIds.has(chat.id);
 
     return (
       <div
-        key={chat.id}
+        key={itemKey}
         className={`relative w-full text-left px-2 py-1 rounded-md transition-colors cursor-pointer leading-tight ${
           currentChatId === chat.id
             ? 'bg-surface-800 text-surface-100'
@@ -1034,14 +1084,35 @@ function ChatAccordion({
       </button>
 
       <div className="flex-1 overflow-y-auto scrollbar-thin space-y-0 min-h-0">
-        {recentSidebarChats.length > 0 ? (
-          recentSidebarChats.map((chat) => renderChatItem(chat))
+        {groupedSidebarChats.flattenCount > 0 ? (
+          <>
+            {groupedSidebarChats.pinned.length > 0 && <SidebarSectionHeader title="Pinned" />}
+            {groupedSidebarChats.pinned.map((chat) => renderChatItem(chat, `pinned-${chat.id}`))}
+            {groupedSidebarChats.direct.length > 0 && <SidebarSectionHeader title="Direct" />}
+            {groupedSidebarChats.direct.map((chat) => renderChatItem(chat, `direct-${chat.id}`))}
+            {groupedSidebarChats.channels.map((channel) => (
+              <div key={channel.key}>
+                <SidebarSectionHeader title={channel.label} />
+                {channel.chats.map((chat) => renderChatItem(chat, `channel-${channel.key}-${chat.id}`))}
+              </div>
+            ))}
+            {groupedSidebarChats.uncategorized.length > 0 && <SidebarSectionHeader title="Uncategorized" />}
+            {groupedSidebarChats.uncategorized.map((chat) => renderChatItem(chat, `uncategorized-${chat.id}`))}
+          </>
         ) : (
           <div className="px-2 py-1.5 text-xs text-surface-500 text-center">
             No conversations yet
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+function SidebarSectionHeader({ title }: { title: string }): JSX.Element {
+  return (
+    <div className="px-2 pt-2 pb-1">
+      <h3 className="text-[10px] uppercase tracking-wider text-surface-500 font-semibold">{title}</h3>
     </div>
   );
 }

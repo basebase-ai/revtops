@@ -130,6 +130,13 @@ export interface ChatSummary {
   participants?: Participant[];
   matchSnippet?: string | null; // Search match context snippet
   matchCount?: number; // Number of occurrences in conversation
+  workspaceId?: string | null;
+  source?: string | null;
+  sourceChannelId?: string | null;
+  normalizedChannelId?: string | null;
+  resolvedChannelName?: string | null;
+  groupBucketType?: "pinned" | "direct" | "channel" | "uncategorized";
+  groupBucketKey?: string;
 }
 
 // Workstream (semantic Home) types
