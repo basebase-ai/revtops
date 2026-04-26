@@ -390,4 +390,5 @@ export type AdminPanelTab =
   | "users"
   | "organizations"
   | "sources"
-  | "jobs";
+  | "jobs"
+  | "graph-magic";
