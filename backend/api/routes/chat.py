@@ -268,6 +268,8 @@ def _derive_bucket(
 ) -> tuple[str, str]:
     if scope == "private":
         return ("direct", "direct")
+    if source == _WEB_PLATFORM_SLUG:
+        return ("direct", "direct")
     if source == "slack" and normalized_channel_id:
         if normalized_channel_id.startswith("D"):
             return ("direct", "direct")
