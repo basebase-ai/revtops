@@ -1319,10 +1319,10 @@ class ChatOrchestrator:
                 system_prompt += "\n## Channel Personality (Always Apply in this channel)\n"
                 system_prompt += f"- [{channel_personality_memory['id']}] {channel_personality_memory['content']}\n"
                 logger.info(
-                    "[Orchestrator] Memory applied type=channel conversation_id=%s source=%s memory_id=%s",
+                    "[Orchestrator] Memory applied type=channel conversation_id=%s source=%s memory_id_present=%s",
                     self.conversation_id,
                     self.source,
-                    channel_personality_memory["id"],
+                    bool(channel_personality_memory.get("id")),
                 )
 
             # -- User profile section --
