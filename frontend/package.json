@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@codesandbox/sandpack-react": "^2.20.0",
+    "@cosmograph/react": "1.4.2",
     "@nangohq/frontend": "^0.69.49",
     "@stripe/react-stripe-js": "^2.4.0",
     "@stripe/stripe-js": "^2.4.0",
@@ -25,8 +26,7 @@
     "react-markdown": "^10.1.0",
     "react-plotly.js": "^2.6.0",
     "remark-gfm": "^4.0.1",
-    "zustand": "^5.0.10",
-    "@cosmograph/react": "^0.9.2"
+    "zustand": "^5.0.10"
   },
   "devDependencies": {
     "@types/plotly.js": "^2.33.4",

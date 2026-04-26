@@ -89,11 +89,10 @@ export function UncleJethroGraphMagic(): JSX.Element {
             nodes={graph.graph.nodes}
             links={graph.graph.edges}
             nodeLabelAccessor={(n: GraphNode) => n.label}
-            linkSource={(l: GraphEdge) => l.source}
-            linkTarget={(l: GraphEdge) => l.target}
-            showLabelsOnHover
-            renderLabels
-            onClick={(n: GraphNode) => void onNodeClick(n.id)}
+            onClick={(clickedNode: GraphNode | undefined) => {
+              if (!clickedNode?.id) return;
+              void onNodeClick(clickedNode.id);
+            }}
           />
         ) : (
           <div className="text-surface-400 text-sm">No graph data loaded.</div>
