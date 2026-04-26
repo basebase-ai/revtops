@@ -1309,9 +1309,21 @@ class ChatOrchestrator:
             if global_command_memory and is_private_memory_context:
                 system_prompt += "\n## Global Command (Always Apply)\n"
                 system_prompt += f"- [{global_command_memory['id']}] {global_command_memory['content']}\n"
+                logger.info(
+                    "[Orchestrator] Memory applied type=user-direct conversation_id=%s source=%s memory_id=%s",
+                    self.conversation_id,
+                    self.source,
+                    global_command_memory["id"],
+                )
             if channel_personality_memory:
                 system_prompt += "\n## Channel Personality (Always Apply in this channel)\n"
                 system_prompt += f"- [{channel_personality_memory['id']}] {channel_personality_memory['content']}\n"
+                logger.info(
+                    "[Orchestrator] Memory applied type=channel conversation_id=%s source=%s memory_id=%s",
+                    self.conversation_id,
+                    self.source,
+                    channel_personality_memory["id"],
+                )
 
             # -- User profile section --
             if user_memories or phone_number:
