@@ -21,7 +21,7 @@ import { Avatar, type AvatarUser } from './Avatar';
 import { ScopeLockIcon } from './ScopeVisibilityIcons';
 import { APP_NAME, LOGO_PATH, RELEASE_STAGE } from '../lib/brand';
 
-const CHANNEL_PERSONALITY_MAX_LENGTH = 2000;
+const CHANNEL_PERSONALITY_MAX_LENGTH = 1000;
 const CHANNEL_PERSONALITY_TEXTAREA_BASE_HEIGHT_PX = 160;
 const CHANNEL_PERSONALITY_TEXTAREA_MAX_HEIGHT_PX = Math.round(CHANNEL_PERSONALITY_TEXTAREA_BASE_HEIGHT_PX * 1.5);
 
