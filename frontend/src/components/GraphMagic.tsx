@@ -65,19 +65,75 @@ type AdminOrganization = {
   name: string;
 };
 
+const GRAPH_MAGIC_QUERY_KEYS = {
+  orgId: 'gm_org',
+  startDate: 'gm_start',
+  endDate: 'gm_end',
+  selectedDate: 'gm_selected',
+  sizeMode: 'gm_size',
+  repulsionLevel: 'gm_repulsion',
+} as const;
+
+const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+
+const getTodayIsoDate = (): string => new Date().toISOString().slice(0, 10);
+
+const readGraphMagicStateFromUri = (): {
+  orgId: string;
+  startDate: string;
+  endDate: string;
+  selectedDate: string;
+  sizeMode: NodeSizeMode;
+  repulsionLevel: RepulsionLevel;
+} => {
+  if (typeof window === 'undefined') {
+    const today = getTodayIsoDate();
+    return {
+      orgId: '',
+      startDate: today,
+      endDate: today,
+      selectedDate: today,
+      sizeMode: 'composite',
+      repulsionLevel: 'weak',
+    };
+  }
+
+  const params = new URLSearchParams(window.location.search);
+  const today = getTodayIsoDate();
+  const rawSizeMode = params.get(GRAPH_MAGIC_QUERY_KEYS.sizeMode);
+  const rawRepulsionLevel = params.get(GRAPH_MAGIC_QUERY_KEYS.repulsionLevel);
+  const validStartDate = params.get(GRAPH_MAGIC_QUERY_KEYS.startDate);
+  const validEndDate = params.get(GRAPH_MAGIC_QUERY_KEYS.endDate);
+  const validSelectedDate = params.get(GRAPH_MAGIC_QUERY_KEYS.selectedDate);
+
+  return {
+    orgId: params.get(GRAPH_MAGIC_QUERY_KEYS.orgId) ?? '',
+    startDate: validStartDate && DATE_PATTERN.test(validStartDate) ? validStartDate : today,
+    endDate: validEndDate && DATE_PATTERN.test(validEndDate) ? validEndDate : today,
+    selectedDate: validSelectedDate && DATE_PATTERN.test(validSelectedDate) ? validSelectedDate : today,
+    sizeMode: rawSizeMode === 'mentions' || rawSizeMode === 'centrality' || rawSizeMode === 'composite'
+      ? rawSizeMode
+      : 'composite',
+    repulsionLevel: rawRepulsionLevel === 'weak' || rawRepulsionLevel === 'medium' || rawRepulsionLevel === 'strong'
+      ? rawRepulsionLevel
+      : 'weak',
+  };
+};
+
 export function GraphMagic(): JSX.Element {
   const orgMemberships: UserOrganization[] = useAuthStore((state) => state.organizations);
-  const [orgId, setOrgId] = useState('');
-  const [startDate, setStartDate] = useState(new Date().toISOString().slice(0, 10));
-  const [endDate, setEndDate] = useState(new Date().toISOString().slice(0, 10));
-  const [selectedDate, setSelectedDate] = useState(new Date().toISOString().slice(0, 10));
+  const uriState = useMemo(() => readGraphMagicStateFromUri(), []);
+  const [orgId, setOrgId] = useState(uriState.orgId);
+  const [startDate, setStartDate] = useState(uriState.startDate);
+  const [endDate, setEndDate] = useState(uriState.endDate);
+  const [selectedDate, setSelectedDate] = useState(uriState.selectedDate);
   const [availableSnapshotDates, setAvailableSnapshotDates] = useState<string[]>([]);
   const [isLoadingSnapshotDates, setIsLoadingSnapshotDates] = useState(false);
   const [graph, setGraph] = useState<GraphResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [nodeId, setNodeId] = useState<string | null>(null);
-  const [sizeMode, setSizeMode] = useState<NodeSizeMode>('composite');
-  const [repulsionLevel, setRepulsionLevel] = useState<RepulsionLevel>('weak');
+  const [sizeMode, setSizeMode] = useState<NodeSizeMode>(uriState.sizeMode);
+  const [repulsionLevel, setRepulsionLevel] = useState<RepulsionLevel>(uriState.repulsionLevel);
   const [snippets, setSnippets] = useState<Array<{ ref: string; snippet: string; event_time: string; source_display?: string }>>([]);
   const [availableOrgs, setAvailableOrgs] = useState<AdminOrganization[]>([]);
 
@@ -137,6 +193,44 @@ export function GraphMagic(): JSX.Element {
     void fetchGraph();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [orgId, selectedDate]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    const params = new URLSearchParams(window.location.search);
+    const nextValues: Record<string, string> = {
+      [GRAPH_MAGIC_QUERY_KEYS.orgId]: orgId,
+      [GRAPH_MAGIC_QUERY_KEYS.startDate]: startDate,
+      [GRAPH_MAGIC_QUERY_KEYS.endDate]: endDate,
+      [GRAPH_MAGIC_QUERY_KEYS.selectedDate]: selectedDate,
+      [GRAPH_MAGIC_QUERY_KEYS.sizeMode]: sizeMode,
+      [GRAPH_MAGIC_QUERY_KEYS.repulsionLevel]: repulsionLevel,
+    };
+
+    Object.entries(nextValues).forEach(([key, value]) => {
+      if (value) {
+        params.set(key, value);
+        return;
+      }
+      params.delete(key);
+    });
+
+    const nextQueryString = params.toString();
+    const nextUri = `${window.location.pathname}${nextQueryString ? `?${nextQueryString}` : ''}${window.location.hash}`;
+    const currentUri = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+
+    if (nextUri !== currentUri) {
+      window.history.replaceState(window.history.state, '', nextUri);
+      console.debug('[Graph Magic] Updated URI selection state', {
+        orgId,
+        startDate,
+        endDate,
+        selectedDate,
+        sizeMode,
+        repulsionLevel,
+      });
+    }
+  }, [orgId, startDate, endDate, selectedDate, sizeMode, repulsionLevel]);
 
   useEffect(() => {
     const fetchSnapshotDates = async (): Promise<void> => {
