@@ -135,7 +135,7 @@ const MODEL_FAMILY_DEFAULTS: Record<string, { primary: string; fast: string }> =
   minimax: { primary: 'MiniMax-M2.7', fast: 'MiniMax-M2.7-highspeed' },
   openai: { primary: 'gpt-5.5', fast: 'gpt-5.5-mini' },
   gemini: { primary: 'gemini-2.5-pro', fast: 'gemini-2.5-flash' },
-  alibaba: { primary: 'qwen3-coder-plus', fast: 'qwen3-flash' },
+  alibaba: { primary: 'qwen3-coder-plus', fast: 'qwen3-30b-a3b-instruct-2507' },
 };
 
 const isFastModelCandidate = (modelName: string): boolean => {
