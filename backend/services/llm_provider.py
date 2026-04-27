@@ -37,6 +37,9 @@ _GLOBAL_PROVIDER_KEYS: dict[str, str | None] = {
 }
 
 _DEFAULT_PROVIDER: LLMProvider = "anthropic"
+_PROVIDER_ALIASES: dict[str, LLMProvider] = {
+    "alibaba": "qwen",
+}
 
 
 async def resolve_llm_config(
@@ -58,7 +61,7 @@ async def resolve_llm_config(
             if org is not None:
                 org_handle = org.handle
                 if org.llm_provider:
-                    provider = org.llm_provider  # type: ignore[assignment]
+                    provider = _normalize_provider(org.llm_provider)
                 if org.llm_primary_model:
                     primary_model = org.llm_primary_model
                 if org.llm_cheap_model:
@@ -133,7 +136,7 @@ async def resolve_api_key_for_provider(
                 provider,
                 exc_info=True,
             )
-    return _resolve_api_key(provider, org_handle)
+    return _resolve_api_key(_normalize_provider(provider), org_handle)
 
 
 async def _load_organization_for_llm(organization_id: str | UUID) -> object | None:
@@ -161,6 +164,15 @@ def _resolve_api_key(provider: LLMProvider, org_handle: str | None) -> str:
 
     logger.error("No API key found for provider %s (org_handle=%s)", provider, org_handle)
     return ""
+
+
+def _normalize_provider(provider: str | LLMProvider) -> LLMProvider:
+    """Normalize provider aliases to canonical provider names."""
+    normalized: str = provider.strip().lower()
+    aliased: LLMProvider | None = _PROVIDER_ALIASES.get(normalized)
+    if aliased:
+        return aliased
+    return normalized  # type: ignore[return-value]
 
 
 def _select_compatible_model(
@@ -268,7 +280,7 @@ def _parse_model_map() -> dict[str, str]:
             continue
         if ":" in entry:
             model, provider = entry.rsplit(":", 1)
-            result[model.strip()] = provider.strip()
+            result[model.strip()] = _normalize_provider(provider.strip())
         else:
             result[entry] = ""
     return result
