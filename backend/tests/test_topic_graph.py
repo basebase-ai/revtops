@@ -1,6 +1,6 @@
 from datetime import date, datetime, timezone
 
-from services.topic_graph import _rank_evidence, iter_date_range, select_watermark_time
+from services.topic_graph import _rank_evidence, _tokenize, iter_date_range, select_watermark_time
 
 
 def test_watermark_prefers_source_event_time() -> None:
@@ -41,3 +41,13 @@ def test_snippet_split_relevance_and_recent_dedup() -> None:
 
 def test_partial_failure_warning_copy() -> None:
     assert "Partial data: some sources failed" == "Partial data: some sources failed"
+
+
+def test_tokenize_filters_common_english_words() -> None:
+    tokens = _tokenize("the roadmap and project kubernetes observability")
+    assert "the" not in tokens
+    assert "and" not in tokens
+    assert "project" not in tokens
+    assert "kubernetes" in tokens
+    assert "roadmap" in tokens
+    assert "observability" in tokens
