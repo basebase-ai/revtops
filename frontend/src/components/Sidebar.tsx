@@ -21,7 +21,9 @@ import { Avatar, type AvatarUser } from './Avatar';
 import { ScopeLockIcon } from './ScopeVisibilityIcons';
 import { APP_NAME, LOGO_PATH, RELEASE_STAGE } from '../lib/brand';
 
-const CHANNEL_PERSONALITY_MAX_LENGTH = 800;
+const CHANNEL_PERSONALITY_MAX_LENGTH = 2000;
+const CHANNEL_PERSONALITY_TEXTAREA_BASE_HEIGHT_PX = 160;
+const CHANNEL_PERSONALITY_TEXTAREA_MAX_HEIGHT_PX = Math.round(CHANNEL_PERSONALITY_TEXTAREA_BASE_HEIGHT_PX * 1.5);
 
 /** Help button and modal for support requests. */
 function HelpButton(): JSX.Element {
@@ -1292,6 +1294,14 @@ function ChannelPersonalityPanel({
   const [error, setError] = useState<string | null>(null);
   const lastSavedRef = useRef('');
   const saveTimeoutRef = useRef<number | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+
+  useEffect(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    textarea.style.height = `${CHANNEL_PERSONALITY_TEXTAREA_BASE_HEIGHT_PX}px`;
+    textarea.style.height = `${Math.min(textarea.scrollHeight, CHANNEL_PERSONALITY_TEXTAREA_MAX_HEIGHT_PX)}px`;
+  }, [draft, isLoading]);
 
   useEffect(() => {
     let isActive = true;
@@ -1399,11 +1409,16 @@ function ChannelPersonalityPanel({
           ) : (
             <>
               <textarea
-                className="w-full min-h-40 rounded-lg bg-surface-800 border border-surface-700 px-3 py-2 text-sm text-surface-100"
+                ref={textareaRef}
+                className="w-full rounded-lg bg-surface-800 border border-surface-700 px-3 py-2 text-sm text-surface-100 overflow-y-auto"
                 value={draft}
                 onChange={(e) => {
                   setDraft(e.target.value);
                   setIsDirty(true);
+                }}
+                style={{
+                  minHeight: `${CHANNEL_PERSONALITY_TEXTAREA_BASE_HEIGHT_PX}px`,
+                  maxHeight: `${CHANNEL_PERSONALITY_TEXTAREA_MAX_HEIGHT_PX}px`,
                 }}
                 placeholder="e.g. Keep answers concise, action-oriented, and include channel-specific context."
                 maxLength={CHANNEL_PERSONALITY_MAX_LENGTH}
