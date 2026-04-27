@@ -269,6 +269,18 @@ def _parse_model_map() -> dict[str, str]:
     return result
 
 
+def _model_aliases(model: str) -> tuple[str, ...]:
+    """Return acceptable aliases for known model naming variations."""
+    normalized: str = model.strip()
+    aliases: list[str] = [normalized]
+    # Accept both gpt-5.5 and gpt5.5 naming variants (including mini/nano).
+    if normalized.startswith("gpt-5.5"):
+        aliases.append(normalized.replace("gpt-5.5", "gpt5.5", 1))
+    elif normalized.startswith("gpt5.5"):
+        aliases.append(normalized.replace("gpt5.5", "gpt-5.5", 1))
+    return tuple(dict.fromkeys(aliases))
+
+
 def get_model_provider_map() -> dict[str, str]:
     """Return the full {model_name: provider} map from ALL_MODEL_STRINGS."""
     return _parse_model_map()
@@ -284,7 +296,12 @@ def get_allowed_models() -> list[str]:
 
 def provider_for_model(model: str) -> str | None:
     """Look up the provider for a model name. Returns None if unknown."""
-    return _parse_model_map().get(model) or None
+    model_map: dict[str, str] = _parse_model_map()
+    for alias in _model_aliases(model):
+        provider: str | None = model_map.get(alias)
+        if provider is not None:
+            return provider or None
+    return None
 
 
 def is_model_allowed(model: str) -> bool:
@@ -295,4 +312,4 @@ def is_model_allowed(model: str) -> bool:
     model_map: dict[str, str] = _parse_model_map()
     if not model_map:
         return True
-    return model in model_map
+    return any(alias in model_map for alias in _model_aliases(model))

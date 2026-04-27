@@ -126,7 +126,7 @@ interface OrganizationPanelProps {
 const MODEL_FAMILY_DEFAULTS: Record<string, { primary: string; fast: string }> = {
   anthropic: { primary: 'claude-opus-4-6', fast: 'claude-haiku-4-5-20251001' },
   minimax: { primary: 'MiniMax-M2.7', fast: 'MiniMax-M2.7-highspeed' },
-  openai: { primary: 'gpt-5.5', fast: 'gpt-5.5-mini' },
+  openai: { primary: 'gpt5.5', fast: 'gpt5.5-mini' },
   gemini: { primary: 'gemini-2.5-pro', fast: 'gemini-2.5-flash' },
 };
 
