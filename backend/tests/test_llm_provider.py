@@ -52,6 +52,24 @@ def test_resolve_llm_config_logs_when_model_fallback_engaged(monkeypatch, caplog
     )
 
 
+def test_resolve_llm_config_switches_provider_for_qwen_primary(monkeypatch) -> None:
+    from services import llm_provider
+
+    monkeypatch.setattr(llm_provider, "_DEFAULT_PROVIDER", "anthropic")
+    monkeypatch.setitem(llm_provider._GLOBAL_PROVIDER_KEYS, "anthropic", "test-anthropic-key")
+    monkeypatch.setitem(llm_provider._GLOBAL_PROVIDER_KEYS, "qwen", "test-qwen-key")
+    monkeypatch.setattr(llm_provider.settings, "DEFAULT_PRIMARY_MODEL", "qwen3-max")
+    monkeypatch.setattr(llm_provider.settings, "DEFAULT_CHEAP_MODEL", "qwen-flash")
+    monkeypatch.setattr(llm_provider.settings, "ALL_MODEL_STRINGS", "qwen3-max:qwen,qwen-flash:qwen")
+
+    config = asyncio.run(resolve_llm_config(None))
+
+    assert config.provider == "qwen"
+    assert config.primary_model == "qwen3-max"
+    assert config.cheap_model == "qwen-flash"
+    assert config.workflow_model == "qwen3-max"
+
+
 def test_resolve_api_key_for_provider_uses_global_key(monkeypatch) -> None:
     from services import llm_provider
 

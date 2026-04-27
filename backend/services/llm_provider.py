@@ -72,9 +72,13 @@ async def resolve_llm_config(
                 exc_info=True,
             )
 
+    requested_primary_model: str | None = primary_model or settings.DEFAULT_PRIMARY_MODEL
+    requested_cheap_model: str | None = cheap_model or settings.DEFAULT_CHEAP_MODEL
+    requested_workflow_model: str | None = workflow_model
+
     # Infer provider from model when not explicitly set
     if provider == _DEFAULT_PROVIDER:
-        inferred_model: str | None = primary_model or cheap_model
+        inferred_model: str | None = requested_primary_model or requested_cheap_model
         if inferred_model:
             inferred: str | None = provider_for_model(inferred_model)
             if inferred:
@@ -84,22 +88,57 @@ async def resolve_llm_config(
     provider_defaults: dict[str, str] = PROVIDER_DEFAULT_MODELS.get(
         provider, PROVIDER_DEFAULT_MODELS["anthropic"]
     )
-    if not primary_model:
+    primary_model = _select_compatible_model(
+        requested_model=requested_primary_model,
+        provider=provider,
+        fallback_model=provider_defaults["primary"],
+        model_role="primary",
+    )
+    cheap_model = _select_compatible_model(
+        requested_model=requested_cheap_model,
+        provider=provider,
+        fallback_model=provider_defaults["cheap"],
+        model_role="cheap",
+    )
+    workflow_model = (
+        _select_compatible_model(
+            requested_model=requested_workflow_model,
+            provider=provider,
+            fallback_model=primary_model,
+            model_role="workflow",
+        )
+        if requested_workflow_model
+        else primary_model
+    )
+
+    resolved_provider: str | None = provider_for_model(primary_model) or _infer_provider_from_model_name(primary_model)
+    if resolved_provider and resolved_provider != provider:
+        logger.warning(
+            "Switching provider to match resolved primary model '%s': %s -> %s",
+            primary_model,
+            provider,
+            resolved_provider,
+        )
+        provider = resolved_provider  # type: ignore[assignment]
+        provider_defaults = PROVIDER_DEFAULT_MODELS.get(provider, PROVIDER_DEFAULT_MODELS["anthropic"])
         primary_model = _select_compatible_model(
-            requested_model=settings.DEFAULT_PRIMARY_MODEL,
+            requested_model=primary_model,
             provider=provider,
             fallback_model=provider_defaults["primary"],
             model_role="primary",
         )
-    if not cheap_model:
         cheap_model = _select_compatible_model(
-            requested_model=settings.DEFAULT_CHEAP_MODEL,
+            requested_model=cheap_model,
             provider=provider,
             fallback_model=provider_defaults["cheap"],
             model_role="cheap",
         )
-    if not workflow_model:
-        workflow_model = primary_model
+        workflow_model = _select_compatible_model(
+            requested_model=workflow_model,
+            provider=provider,
+            fallback_model=primary_model,
+            model_role="workflow",
+        )
 
     # Resolve API key: org-specific env var → global provider key
     api_key: str = _resolve_api_key(provider, org_handle)

@@ -129,6 +129,7 @@ const MODEL_FAMILY_DEFAULTS: Record<string, { primary: string; fast: string }> =
   minimax: { primary: 'MiniMax-M2.7', fast: 'MiniMax-M2.7-highspeed' },
   openai: { primary: 'gpt-5.5', fast: 'gpt-5.5-mini' },
   gemini: { primary: 'gemini-2.5-pro', fast: 'gemini-2.5-flash' },
+  qwen: { primary: 'qwen3-max', fast: 'qwen-flash' },
 };
 
 const isOpenAICheapLikeModel = (modelName: string): boolean => {
@@ -684,6 +685,7 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
       if (normalized.startsWith('claude')) return 'anthropic';
       if (normalized.startsWith('minimax')) return 'minimax';
       if (normalized.startsWith('gemini')) return 'gemini';
+      if (normalized.startsWith('qwen') || normalized.startsWith('qwq')) return 'qwen';
       if (normalized.startsWith('gpt') || normalized.startsWith('o1') || normalized.startsWith('o3') || normalized.startsWith('o4')) return 'openai';
       return null;
     };
