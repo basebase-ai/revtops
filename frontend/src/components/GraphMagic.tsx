@@ -290,7 +290,7 @@ export function GraphMagic(): JSX.Element {
       </div>
       {partialWarning && <p className="text-xs text-amber-400">Partial data: some sources failed</p>}
       {error && <p className="text-sm text-red-400">{error}</p>}
-      <div className="bg-surface-900 border border-surface-800 rounded-lg p-3 flex-1 min-h-[75vh] relative">
+      <div className="bg-surface-900 border border-surface-800 rounded-lg p-3 flex-1 min-h-[68vh] relative">
         {graphWithVisuals ? (
           <Cosmograph
             nodes={graphWithVisuals.nodes}
