@@ -19,6 +19,14 @@ def test_infer_provider_from_model_name() -> None:
     assert _infer_provider_from_model_name("some-unknown-model") is None
 
 
+def test_provider_for_model_normalizes_alibaba_alias(monkeypatch) -> None:
+    from services import llm_provider
+
+    monkeypatch.setattr(llm_provider.settings, "ALL_MODEL_STRINGS", "qwen3-max:alibaba")
+
+    assert provider_for_model("qwen3-max") == "qwen"
+
+
 def test_resolve_llm_config_uses_provider_defaults_for_mismatched_global_models(monkeypatch) -> None:
     from services import llm_provider
 
@@ -33,6 +41,34 @@ def test_resolve_llm_config_uses_provider_defaults_for_mismatched_global_models(
     assert config.provider == "openai"
     assert config.primary_model == "gpt-5.5"
     assert config.cheap_model == "gpt-5.5-mini"
+
+
+def test_resolve_llm_config_normalizes_alibaba_provider_alias(monkeypatch) -> None:
+    from services import llm_provider
+
+    monkeypatch.setattr(llm_provider, "_DEFAULT_PROVIDER", "anthropic")
+    monkeypatch.setitem(llm_provider._GLOBAL_PROVIDER_KEYS, "qwen", "test-qwen-key")
+    monkeypatch.setattr(llm_provider.settings, "DEFAULT_PRIMARY_MODEL", "")
+    monkeypatch.setattr(llm_provider.settings, "DEFAULT_CHEAP_MODEL", "")
+    monkeypatch.setattr(llm_provider.settings, "ALL_MODEL_STRINGS", "")
+
+    class _Org:
+        handle = "acme"
+        llm_provider = "alibaba"
+        llm_primary_model = None
+        llm_cheap_model = None
+        llm_workflow_model = None
+
+    async def _fake_load_org(_organization_id):
+        return _Org()
+
+    monkeypatch.setattr(llm_provider, "_load_organization_for_llm", _fake_load_org)
+
+    config = asyncio.run(resolve_llm_config("00000000-0000-0000-0000-000000000001"))
+
+    assert config.provider == "qwen"
+    assert config.primary_model == "qwen3.6-plus"
+    assert config.cheap_model == "qwen3-30b-a3b-instruct-2507"
 
 
 def test_resolve_llm_config_logs_when_model_fallback_engaged(monkeypatch, caplog) -> None:

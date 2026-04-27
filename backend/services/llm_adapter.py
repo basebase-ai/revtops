@@ -811,22 +811,27 @@ _PROVIDERS_WITHOUT_DOCUMENT_BLOCKS: frozenset[str] = frozenset({
     "gemini",
     "qwen",
 })
+_PROVIDER_ALIASES: dict[str, str] = {
+    "alibaba": "qwen",
+}
 
 
 def get_adapter(config: LLMConfig) -> AnthropicAdapter | OpenAIAdapter:
     """Create the appropriate adapter for a resolved LLM config."""
-    if config.provider in ("anthropic", "minimax"):
-        base_url: str | None = config.base_url or PROVIDER_BASE_URLS.get(config.provider)
-        supports_docs: bool = config.provider not in _PROVIDERS_WITHOUT_DOCUMENT_BLOCKS
+    provider: str = _PROVIDER_ALIASES.get(config.provider, config.provider)
+
+    if provider in ("anthropic", "minimax"):
+        base_url: str | None = config.base_url or PROVIDER_BASE_URLS.get(provider)
+        supports_docs: bool = provider not in _PROVIDERS_WITHOUT_DOCUMENT_BLOCKS
         return AnthropicAdapter(
             api_key=config.api_key,
             base_url=base_url,
             supports_document_blocks=supports_docs,
         )
 
-    if config.provider in ("openai", "gemini", "qwen"):
-        base_url = config.base_url or PROVIDER_BASE_URLS.get(config.provider)
-        supports_docs: bool = config.provider not in _PROVIDERS_WITHOUT_DOCUMENT_BLOCKS
+    if provider in ("openai", "gemini", "qwen"):
+        base_url = config.base_url or PROVIDER_BASE_URLS.get(provider)
+        supports_docs: bool = provider not in _PROVIDERS_WITHOUT_DOCUMENT_BLOCKS
         return OpenAIAdapter(
             api_key=config.api_key,
             base_url=base_url,
