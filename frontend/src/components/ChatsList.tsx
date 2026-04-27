@@ -270,8 +270,11 @@ export function ChatsList({ chats: sidebarChats, onSelectChat, onNewChat }: Chat
           <div className="flex items-center gap-3 flex-shrink-0">
             {initialLoaded ? (
               <span className="text-sm text-surface-500">
-                {mergedChats.length} conversation{mergedChats.length !== 1 ? 's' : ''}
-                {hasMore ? '+' : ''}
+                <span className="sm:hidden">{mergedChats.length}{hasMore ? '+' : ''}</span>
+                <span className="hidden sm:inline">
+                  {mergedChats.length} conversation{mergedChats.length !== 1 ? 's' : ''}
+                  {hasMore ? '+' : ''}
+                </span>
               </span>
             ) : null}
             <button type="button" onClick={onNewChat} className="btn-primary flex items-center gap-2">
