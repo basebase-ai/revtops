@@ -2,6 +2,8 @@ import asyncio
 
 from services.llm_provider import (
     _infer_provider_from_model_name,
+    is_model_allowed,
+    provider_for_model,
     resolve_api_key_for_provider,
     resolve_llm_config,
 )
@@ -55,3 +57,13 @@ def test_resolve_api_key_for_provider_uses_global_key(monkeypatch) -> None:
 
     key = asyncio.run(resolve_api_key_for_provider("gemini", None))
     assert key == "test-gemini-key"
+
+
+def test_model_allowlist_accepts_gpt55_aliases(monkeypatch) -> None:
+    from services import llm_provider
+
+    monkeypatch.setattr(llm_provider.settings, "ALL_MODEL_STRINGS", "gpt5.5:openai,gpt5.5-mini:openai")
+
+    assert is_model_allowed("gpt-5.5")
+    assert is_model_allowed("gpt-5.5-mini")
+    assert provider_for_model("gpt-5.5") == "openai"
