@@ -25,6 +25,11 @@ type GraphResponse = {
   run_metadata: { coverage?: { partial?: boolean; warning_text?: string } };
 };
 
+type GraphSnapshotDatesResponse = {
+  organization_id: string;
+  dates: string[];
+};
+
 type AdminOrganization = {
   id: string;
   name: string;
@@ -36,6 +41,7 @@ export function GraphMagic(): JSX.Element {
   const [startDate, setStartDate] = useState(new Date().toISOString().slice(0, 10));
   const [endDate, setEndDate] = useState(new Date().toISOString().slice(0, 10));
   const [selectedDate, setSelectedDate] = useState(new Date().toISOString().slice(0, 10));
+  const [availableSnapshotDates, setAvailableSnapshotDates] = useState<string[]>([]);
   const [graph, setGraph] = useState<GraphResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [nodeId, setNodeId] = useState<string | null>(null);
@@ -84,7 +90,7 @@ export function GraphMagic(): JSX.Element {
   }, [orgId, startDate, endDate]);
 
   const fetchGraph = async (): Promise<void> => {
-    if (!orgId) return;
+    if (!orgId || !selectedDate) return;
     console.debug('[Graph Magic] Fetching graph snapshot', { orgId, selectedDate });
     const { data, error: reqErr } = await apiRequest<GraphResponse>(`/admin-topic-graph/${orgId}/${selectedDate}`);
     if (reqErr || !data) {
@@ -99,6 +105,40 @@ export function GraphMagic(): JSX.Element {
     void fetchGraph();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [orgId, selectedDate]);
+
+  useEffect(() => {
+    const fetchSnapshotDates = async (): Promise<void> => {
+      if (!orgId) {
+        setAvailableSnapshotDates([]);
+        return;
+      }
+      console.debug('[Graph Magic] Fetching available snapshot dates', { orgId });
+      const { data, error: reqErr } = await apiRequest<GraphSnapshotDatesResponse>(`/admin-topic-graph/${orgId}/dates`);
+      if (reqErr || !data) {
+        console.debug('[Graph Magic] Failed to fetch snapshot dates', { orgId, reqErr });
+        setAvailableSnapshotDates([]);
+        setError(reqErr ?? 'Failed to load available snapshot dates');
+        return;
+      }
+      const dates = data.dates ?? [];
+      setAvailableSnapshotDates(dates);
+      if (dates.length === 0) {
+        setSelectedDate('');
+        setGraph(null);
+        setSnippets([]);
+        setNodeId(null);
+        setError('No graph snapshots available for this organization.');
+        return;
+      }
+      setError(null);
+      setSelectedDate((currentSelectedDate) => {
+        if (dates.includes(currentSelectedDate)) return currentSelectedDate;
+        return dates[0] ?? currentSelectedDate;
+      });
+    };
+
+    void fetchSnapshotDates();
+  }, [orgId]);
 
   const rebuild = async (): Promise<void> => {
     if (!canRebuild) return;
@@ -188,51 +228,64 @@ export function GraphMagic(): JSX.Element {
 
   return (
     <div className="h-full min-h-0 flex flex-col gap-4">
-      <div className="flex flex-col xl:flex-row xl:items-end gap-3 xl:gap-4">
-        <h2 className="text-xl font-semibold text-surface-50 whitespace-nowrap">UJ&apos;s Graph Magic</h2>
-        <div className="grid grid-cols-1 md:grid-cols-6 gap-3 items-end flex-1">
-          <label className="flex flex-col gap-1 text-xs text-surface-400">
-            <span>Organization</span>
-            <select
-              className="px-3 py-2 rounded bg-surface-800 text-surface-100"
-              value={orgId}
-              onChange={(e) => setOrgId(e.target.value)}
-            >
-              {availableOrgs.length === 0 && <option value="">No organizations available</option>}
-              {availableOrgs.map((org) => (
-                <option key={org.id} value={org.id}>{org.name}</option>
-              ))}
-            </select>
-          </label>
-          <label className="flex flex-col gap-1 text-xs text-surface-400">
-            <span>Selected date (graph view)</span>
-            <input type="date" className="px-3 py-2 rounded bg-surface-800" value={selectedDate} onChange={(e) => setSelectedDate(e.target.value)} />
-          </label>
-          <label className="flex flex-col gap-1 text-xs text-surface-400">
-            <span>Generate start date</span>
-            <input type="date" className="px-3 py-2 rounded bg-surface-800" value={startDate} onChange={(e) => setStartDate(e.target.value)} />
-          </label>
-          <label className="flex flex-col gap-1 text-xs text-surface-400">
-            <span>Generate end date</span>
-            <input type="date" className="px-3 py-2 rounded bg-surface-800" value={endDate} onChange={(e) => setEndDate(e.target.value)} />
-          </label>
-          <label className="flex flex-col gap-1 text-xs text-surface-400">
-            <span>Node size mode</span>
-            <select
-              className="px-3 py-2 rounded bg-surface-800 text-surface-100"
-              value={sizeMode}
-              onChange={(e) => setSizeMode(e.target.value as NodeSizeMode)}
-            >
-              <option value="composite">Composite importance</option>
-              <option value="mentions">Mentions</option>
-              <option value="centrality">Centrality</option>
-            </select>
-          </label>
-          <div className="flex items-end">
-            <button disabled={!canRebuild} onClick={() => void rebuild()} className="w-full md:w-auto px-3 py-2 rounded bg-primary-600 disabled:opacity-40">
-              Rebuild
-            </button>
-          </div>
+      <h2 className="text-xl font-semibold text-surface-50">Graph Magic</h2>
+      <div className="grid grid-cols-1 md:grid-cols-6 gap-3 items-end">
+        <label className="flex flex-col gap-1 text-xs text-surface-400">
+          <span>Organization</span>
+          <select
+            className="px-3 py-2 rounded bg-surface-800 text-surface-100"
+            value={orgId}
+            onChange={(e) => setOrgId(e.target.value)}
+          >
+            {availableOrgs.length === 0 && <option value="">No organizations available</option>}
+            {availableOrgs.map((org) => (
+              <option key={org.id} value={org.id}>{org.name}</option>
+            ))}
+          </select>
+        </label>
+        <label className="flex flex-col gap-1 text-xs text-surface-400">
+          <span>Selected date (graph view)</span>
+          <select
+            className="px-3 py-2 rounded bg-surface-800 text-surface-100"
+            value={selectedDate}
+            onChange={(e) => setSelectedDate(e.target.value)}
+            disabled={availableSnapshotDates.length === 0}
+          >
+            {availableSnapshotDates.length === 0 ? (
+              <option value="">No snapshots available</option>
+            ) : (
+              availableSnapshotDates.map((snapshotDate) => (
+                <option key={snapshotDate} value={snapshotDate}>
+                  {snapshotDate}
+                </option>
+              ))
+            )}
+          </select>
+        </label>
+        <label className="flex flex-col gap-1 text-xs text-surface-400">
+          <span>Generate start date</span>
+          <input type="date" className="px-3 py-2 rounded bg-surface-800" value={startDate} onChange={(e) => setStartDate(e.target.value)} />
+        </label>
+        <label className="flex flex-col gap-1 text-xs text-surface-400">
+          <span>Generate end date</span>
+          <input type="date" className="px-3 py-2 rounded bg-surface-800" value={endDate} onChange={(e) => setEndDate(e.target.value)} />
+        </label>
+        <label className="flex flex-col gap-1 text-xs text-surface-400">
+          <span>Node size mode</span>
+          <select
+            className="px-3 py-2 rounded bg-surface-800 text-surface-100"
+            value={sizeMode}
+            onChange={(e) => setSizeMode(e.target.value as NodeSizeMode)}
+          >
+            <option value="composite">Composite importance</option>
+            <option value="mentions">Mentions</option>
+            <option value="centrality">Centrality</option>
+          </select>
+        </label>
+        <div className="flex items-end">
+          <button disabled={!canRebuild} onClick={() => void rebuild()} className="w-full md:w-auto px-3 py-2 rounded bg-primary-600 disabled:opacity-40">
+            Rebuild
+          </button>
         </div>
       </div>
       {partialWarning && <p className="text-xs text-amber-400">Partial data: some sources failed</p>}
