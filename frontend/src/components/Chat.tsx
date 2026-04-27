@@ -25,6 +25,7 @@ import { getConversation, updateConversation, uploadChatFile, type UploadRespons
 import { useIsMobile } from '../hooks';
 import { useTeamMembers, type TeamMember } from '../hooks/useOrganization';
 import { API_BASE, apiRequest, getAuthenticatedRequestHeaders } from '../lib/api';
+import { formatModelNameForUi } from '../lib/modelDisplay';
 
 import { crossTab } from '../lib/crossTab';
 import { APP_NAME, LOGO_PATH } from '../lib/brand';
@@ -466,8 +467,8 @@ export function Chat({
     : configuredPrimaryModel;
   const activeModelName: string | null = conversationState?.activeModelName ?? displayPrimaryModel;
   const activeModelLabel: string | null = conversationState?.activeModelName
-    ? `Running: ${conversationState.activeModelName}`
-    : (displayPrimaryModel ? `Default: ${displayPrimaryModel}` : null);
+    ? `Running: ${formatModelNameForUi(conversationState.activeModelName)}`
+    : (displayPrimaryModel ? `Default: ${formatModelNameForUi(displayPrimaryModel)}` : null);
 
   // Get actions from Zustand (stable references)
   const addConversationMessage = useAppStore((s) => s.addConversationMessage);
