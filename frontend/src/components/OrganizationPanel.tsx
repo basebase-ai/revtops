@@ -123,6 +123,18 @@ interface OrganizationPanelProps {
   mode?: 'panel' | 'page';
 }
 
+const MODEL_FAMILY_DEFAULTS: Record<string, { primary: string; fast: string }> = {
+  anthropic: { primary: 'claude-opus-4-6', fast: 'claude-haiku-4-5-20251001' },
+  minimax: { primary: 'MiniMax-M2.7', fast: 'MiniMax-M2.7-highspeed' },
+  openai: { primary: 'gpt5.5', fast: 'gpt5.5-mini' },
+  gemini: { primary: 'gemini-2.5-pro', fast: 'gemini-2.5-flash' },
+};
+
+const isOpenAICheapLikeModel = (modelName: string): boolean => {
+  const normalized = modelName.trim().toLowerCase();
+  return normalized.includes('mini') || normalized.includes('nano') || normalized.includes('flash');
+};
+
 export function OrganizationPanel({ organization, currentUser, initialTab = 'team', onClose, mode = 'panel' }: OrganizationPanelProps): JSX.Element {
   const queryClient = useQueryClient();
   const setOrganization = useAppStore((state) => state.setOrganization);
@@ -190,6 +202,7 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
   const [llmWorkflowModel, setLlmWorkflowModel] = useState<string>(organization.llmWorkflowModel ?? '');
   const [llmModelMap, setLlmModelMap] = useState<Record<string, string>>({});
   const [isModelSettingsLoading, setIsModelSettingsLoading] = useState<boolean>(false);
+  const [modelFamilyWarning, setModelFamilyWarning] = useState<string | null>(null);
   const [settingsSaved, setSettingsSaved] = useState(false);
   const [isUploadingLogo, setIsUploadingLogo] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -198,13 +211,20 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
   const [resendingMemberId, setResendingMemberId] = useState<string | null>(null);
   const [revokingInviteMemberId, setRevokingInviteMemberId] = useState<string | null>(null);
   const [menuOpenMemberId, setMenuOpenMemberId] = useState<string | null>(null);
+  const previousOrganizationIdRef = useRef<string>(organization.id);
 
   useEffect(() => {
+    const organizationChanged = previousOrganizationIdRef.current !== organization.id;
+    previousOrganizationIdRef.current = organization.id;
+
     setOrgName(organization.name);
     setLogoUrl(organization.logoUrl);
     setLlmPrimaryModel(organization.llmPrimaryModel ?? '');
     setLlmCheapModel(organization.llmCheapModel ?? '');
     setLlmWorkflowModel(organization.llmWorkflowModel ?? '');
+    if (organizationChanged) {
+      setModelFamilyWarning(null);
+    }
     setSettingsSaved(false);
     setExpandedMemberId(null);
     setMenuOpenMemberId(null);
@@ -656,28 +676,118 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
   };
 
   const handleModelChange = async (field: 'llmPrimaryModel' | 'llmCheapModel' | 'llmWorkflowModel', value: string): Promise<void> => {
-    const prev: string = field === 'llmPrimaryModel'
-      ? llmPrimaryModel
-      : field === 'llmCheapModel'
-        ? llmCheapModel
-        : llmWorkflowModel;
-    if (field === 'llmPrimaryModel') setLlmPrimaryModel(value);
-    else if (field === 'llmCheapModel') setLlmCheapModel(value);
-    else setLlmWorkflowModel(value);
+    const inferModelFamily = (modelName: string): string | null => {
+      const explicitProvider: string | undefined = llmModelMap[modelName];
+      if (explicitProvider && explicitProvider.trim()) return explicitProvider.trim().toLowerCase();
+      const normalized = modelName.trim().toLowerCase();
+      if (normalized.startsWith('claude')) return 'anthropic';
+      if (normalized.startsWith('minimax')) return 'minimax';
+      if (normalized.startsWith('gemini')) return 'gemini';
+      if (normalized.startsWith('gpt') || normalized.startsWith('o1') || normalized.startsWith('o3') || normalized.startsWith('o4')) return 'openai';
+      return null;
+    };
+
+    const resolveFamilyDefaultModel = (family: string, modelRole: 'primary' | 'fast'): string => {
+      const familyModels: string[] = Object.entries(llmModelMap)
+        .filter(([, provider]) => provider?.trim().toLowerCase() === family)
+        .map(([modelName]) => modelName);
+
+      if (familyModels.length > 0) {
+        const firstFamilyModel: string = familyModels[0] ?? '';
+        const desiredModelPredicate = (modelName: string): boolean => (
+          modelRole === 'fast' ? isOpenAICheapLikeModel(modelName) : !isOpenAICheapLikeModel(modelName)
+        );
+        const familySpecificDefault = familyModels.find((modelName) => desiredModelPredicate(modelName));
+        if (familySpecificDefault) return familySpecificDefault;
+        console.info('[OrganizationPanel] No role-specific family model found, using first allowed model', {
+          family,
+          modelRole,
+          selectedModel: firstFamilyModel,
+          allowedFamilyModels: familyModels,
+        });
+        return firstFamilyModel;
+      }
+
+      const defaults = MODEL_FAMILY_DEFAULTS[family];
+      if (defaults) {
+        console.warn('[OrganizationPanel] Falling back to hardcoded model family defaults because allowlist returned no models for family', {
+          family,
+          modelRole,
+          defaultModel: modelRole === 'primary' ? defaults.primary : defaults.fast,
+        });
+        return modelRole === 'primary' ? defaults.primary : defaults.fast;
+      }
+      return '';
+    };
+
+    const prevPrimary = llmPrimaryModel;
+    const prevCheap = llmCheapModel;
+    const prevWorkflow = llmWorkflowModel;
+
+    let nextPrimary = field === 'llmPrimaryModel' ? value : llmPrimaryModel;
+    let nextCheap = field === 'llmCheapModel' ? value : llmCheapModel;
+    let warningMessage: string | null = null;
+
+    if (field === 'llmCheapModel' && nextCheap.trim() && nextPrimary.trim()) {
+      const selectedCheapFamily = inferModelFamily(nextCheap);
+      const primaryFamily = inferModelFamily(nextPrimary);
+      if (selectedCheapFamily && primaryFamily && selectedCheapFamily !== primaryFamily) {
+        nextPrimary = resolveFamilyDefaultModel(selectedCheapFamily, 'primary');
+        warningMessage = `Fast model family changed to ${selectedCheapFamily}, so primary model was reset to that family default (${nextPrimary || 'default'}).`;
+      }
+    }
+
+    if (field === 'llmPrimaryModel' && nextPrimary.trim() && nextCheap.trim()) {
+      const selectedPrimaryFamily = inferModelFamily(nextPrimary);
+      const cheapFamily = inferModelFamily(nextCheap);
+      if (selectedPrimaryFamily && cheapFamily && selectedPrimaryFamily !== cheapFamily) {
+        nextCheap = resolveFamilyDefaultModel(selectedPrimaryFamily, 'fast');
+        warningMessage = `Primary model family changed to ${selectedPrimaryFamily}, so fast model was reset to that family default (${nextCheap || 'default'}).`;
+      }
+    }
+
+    setModelFamilyWarning(warningMessage);
+    setLlmPrimaryModel(nextPrimary);
+    setLlmCheapModel(nextCheap);
+    if (field === 'llmWorkflowModel') setLlmWorkflowModel(value);
 
     try {
-      await updateOrgMutation.mutateAsync({
+      const payload: {
+        orgId: string;
+        userId: string;
+        llmPrimaryModel?: string | null;
+        llmCheapModel?: string | null;
+        llmWorkflowModel?: string | null;
+      } = {
         orgId: organization.id,
         userId: currentUser.id,
-        [field]: value || null,
+      };
+      if (field === 'llmPrimaryModel' || (field === 'llmCheapModel' && nextPrimary !== llmPrimaryModel)) {
+        payload.llmPrimaryModel = nextPrimary || null;
+      }
+      if (field === 'llmCheapModel' || (field === 'llmPrimaryModel' && nextCheap !== llmCheapModel)) {
+        payload.llmCheapModel = nextCheap || null;
+      }
+      if (field === 'llmWorkflowModel') {
+        payload.llmWorkflowModel = value || null;
+      }
+
+      await updateOrgMutation.mutateAsync({
+        ...payload,
       });
-      setOrganization({ ...organization, [field]: value || null });
+      setOrganization({
+        ...organization,
+        llmPrimaryModel: nextPrimary || null,
+        llmCheapModel: nextCheap || null,
+        llmWorkflowModel: field === 'llmWorkflowModel' ? (value || null) : organization.llmWorkflowModel,
+      });
       setSettingsSaved(true);
       setTimeout(() => setSettingsSaved(false), 2000);
     } catch (error) {
-      if (field === 'llmPrimaryModel') setLlmPrimaryModel(prev);
-      else if (field === 'llmCheapModel') setLlmCheapModel(prev);
-      else setLlmWorkflowModel(prev);
+      setModelFamilyWarning(null);
+      setLlmPrimaryModel(prevPrimary);
+      setLlmCheapModel(prevCheap);
+      setLlmWorkflowModel(prevWorkflow);
       alert(`Failed to save: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   };
@@ -760,7 +870,7 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
         : 'fixed right-0 top-0 bottom-0 w-full max-w-lg bg-surface-900 border-l border-surface-800 z-50 flex flex-col shadow-2xl'
       }>
         {/* Header */}
-        <header className={`flex items-center justify-between border-b border-surface-800 ${isPageMode ? 'px-8 py-5' : 'px-6 py-4'}`}>
+        <header className={`flex items-center justify-between border-b border-surface-800 ${isPageMode ? 'px-6 sm:px-8 py-5' : 'px-4 sm:px-6 py-4'}`}>
           <div className="flex items-center gap-3">
             {logoUrl ? (
               <img
@@ -791,12 +901,12 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
         </header>
 
         {/* Tabs */}
-        <div className={`flex border-b border-surface-800 ${isPageMode ? 'px-8' : ''}`}>
+        <div className={`flex border-b border-surface-800 overflow-x-auto ${isPageMode ? 'px-6 sm:px-8' : ''}`}>
           {(isPageMode ? (['settings', 'team', 'billing'] as const) : (['team', 'billing', 'settings'] as const)).map((tab) => (
             <button
               key={tab}
               onClick={() => setActiveTab(tab)}
-              className={`px-4 py-3 text-sm font-medium transition-colors ${isPageMode ? '' : 'flex-1'} ${
+              className={`px-4 py-3 text-sm font-medium transition-colors whitespace-nowrap ${isPageMode ? '' : 'flex-1 min-w-[6.5rem]'} ${
                 activeTab === tab
                   ? 'text-primary-400 border-b-2 border-primary-500'
                   : 'text-surface-400 hover:text-surface-200'
@@ -808,7 +918,7 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
         </div>
 
         {/* Content */}
-        <div className={`flex-1 overflow-y-auto ${isPageMode ? 'p-8' : 'p-6'}`}>
+        <div className={`flex-1 overflow-y-auto ${isPageMode ? 'p-6 sm:p-8' : 'p-4 sm:p-6'}`}>
           {activeTab === 'team' && (
             <div className="space-y-6">
               {/* Invite Section */}
@@ -817,7 +927,7 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
                 <p className="mb-2 text-xs text-surface-500">
                   Inviting someone grants access to your org&apos;s data and credit usage.
                 </p>
-                <div className="flex gap-2">
+                <div className="flex flex-col sm:flex-row gap-2">
                   <input
                     type="email"
                     placeholder="colleague@company.com"
@@ -877,33 +987,37 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
                       if (isInvited) {
                         return (
                           <div key={member.id} className="rounded-lg bg-surface-800/50 overflow-hidden">
-                            <div className="flex items-center gap-3 p-3">
-                              <Avatar user={member} size="lg" />
-                              <div className="flex-1 min-w-0">
-                                <span className="font-medium text-surface-100 truncate block">
-                                  {displayName}
-                                </span>
-                                <p className="text-sm text-surface-400 truncate">{member.email}</p>
-                                <p className="text-xs text-amber-400/80 mt-0.5 italic">Invitation pending</p>
+                            <div className="flex flex-col sm:flex-row sm:items-center gap-3 p-3">
+                              <div className="flex items-center gap-3 flex-1 min-w-0">
+                                <Avatar user={member} size="lg" />
+                                <div className="flex-1 min-w-0">
+                                  <span className="font-medium text-surface-100 truncate block">
+                                    {displayName}
+                                  </span>
+                                  <p className="text-sm text-surface-400 truncate">{member.email}</p>
+                                  <p className="text-xs text-amber-400/80 mt-0.5 italic">Invitation pending</p>
+                                </div>
                               </div>
-                              <button
-                                type="button"
-                                onClick={() => void handleResendInvite(member.email, member.id)}
-                                disabled={resendingMemberId === member.id}
-                                className="px-3 py-1.5 text-sm font-medium rounded-lg border border-surface-600 text-surface-300 hover:text-surface-100 hover:border-surface-500 hover:bg-surface-700/50 transition-colors disabled:opacity-50 flex-shrink-0"
-                              >
-                                {resendingMemberId === member.id ? 'Sending...' : 'Resend'}
-                              </button>
-                              {canInviteOrRevokeInvites && (
+                              <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap">
                                 <button
                                   type="button"
-                                  onClick={() => void handleRevokeInvite(member.id)}
-                                  disabled={revokingInviteMemberId === member.id}
-                                  className="px-3 py-1.5 text-sm font-medium rounded-lg border border-rose-700/70 text-rose-300 hover:text-rose-100 hover:border-rose-600 hover:bg-rose-900/30 transition-colors disabled:opacity-50 flex-shrink-0"
+                                  onClick={() => void handleResendInvite(member.email, member.id)}
+                                  disabled={resendingMemberId === member.id}
+                                  className="px-3 py-1.5 text-sm font-medium rounded-lg border border-surface-600 text-surface-300 hover:text-surface-100 hover:border-surface-500 hover:bg-surface-700/50 transition-colors disabled:opacity-50 flex-shrink-0"
                                 >
-                                  {revokingInviteMemberId === member.id ? 'Revoking...' : 'Revoke'}
+                                  {resendingMemberId === member.id ? 'Sending...' : 'Resend'}
                                 </button>
-                              )}
+                                {canInviteOrRevokeInvites && (
+                                  <button
+                                    type="button"
+                                    onClick={() => void handleRevokeInvite(member.id)}
+                                    disabled={revokingInviteMemberId === member.id}
+                                    className="px-3 py-1.5 text-sm font-medium rounded-lg border border-rose-700/70 text-rose-300 hover:text-rose-100 hover:border-rose-600 hover:bg-rose-900/30 transition-colors disabled:opacity-50 flex-shrink-0"
+                                  >
+                                    {revokingInviteMemberId === member.id ? 'Revoking...' : 'Revoke'}
+                                  </button>
+                                )}
+                              </div>
                             </div>
                           </div>
                         );
@@ -914,49 +1028,106 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
                       return (
                         <div key={member.id} className="rounded-lg bg-surface-800/50">
                           {/* Member row */}
-                          <div className="flex items-center gap-3 p-3">
-                            <Avatar user={member} size="lg" />
-                            <div className="flex-1 min-w-0">
-                              <div className="flex items-center gap-2">
-                                <span className="font-medium text-surface-100 truncate">
-                                  {displayName}
-                                </span>
-                                {isAdmin && (
-                                  <span className="px-2 py-0.5 text-xs font-medium bg-primary-500/20 text-primary-400 rounded-full">
-                                    admin
+                          <div className="flex flex-col gap-2 p-3">
+                            <div className="flex items-center gap-3 min-w-0">
+                              <Avatar user={member} size="lg" className="flex-shrink-0" />
+                              <div className="flex-1 min-w-0">
+                                <div className="flex items-center gap-2 min-w-0">
+                                  <span className="font-medium text-surface-100 truncate">
+                                    {displayName}
                                   </span>
+                                  {isAdmin && (
+                                    <span className="px-2 py-0.5 text-xs font-medium bg-primary-500/20 text-primary-400 rounded-full">
+                                      admin
+                                    </span>
+                                  )}
+                                  {isGuest && (
+                                    <>
+                                      <span className="px-2 py-0.5 text-xs font-medium bg-sky-500/20 text-sky-200 rounded-full">
+                                        guest
+                                      </span>
+                                      <button
+                                        type="button"
+                                        onClick={() => void handleToggleGuestUser()}
+                                        disabled={updateGuestUserMutation.isPending}
+                                        className={`ml-auto px-2 py-1 text-[10px] font-medium rounded transition-colors disabled:opacity-50 flex-shrink-0 ${
+                                          guestUserEnabled
+                                            ? 'bg-amber-500/20 text-amber-100 hover:bg-amber-500/30'
+                                            : 'bg-surface-700/40 text-surface-200 hover:bg-surface-700/60'
+                                        }`}
+                                      >
+                                        {updateGuestUserMutation.isPending
+                                          ? 'Saving...'
+                                          : guestUserEnabled
+                                            ? 'Enabled'
+                                            : 'Disabled'}
+                                      </button>
+                                    </>
+                                  )}
+                                </div>
+                                {member.jobTitle && (
+                                  <p className="text-sm text-surface-300 truncate">{member.jobTitle}</p>
                                 )}
-                                {isGuest && (
-                                  <span className="px-2 py-0.5 text-xs font-medium bg-sky-500/20 text-sky-200 rounded-full">
-                                    guest
-                                  </span>
-                                )}
+                                <p className="text-sm text-surface-400 truncate">{member.email}</p>
                               </div>
-                              {member.jobTitle && (
-                                <p className="text-sm text-surface-300 truncate">{member.jobTitle}</p>
+                              {/* Three-dots menu */}
+                              {!isGuest && (
+                                <div className="relative flex-shrink-0 self-center">
+                                  <button
+                                    type="button"
+                                    onClick={(e) => { e.stopPropagation(); setMenuOpenMemberId(isMenuOpen ? null : member.id); }}
+                                    className="p-1 rounded hover:bg-surface-700/60 transition-colors text-surface-400 hover:text-surface-200"
+                                  >
+                                    <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+                                      <path d="M10 6a2 2 0 110-4 2 2 0 010 4zm0 6a2 2 0 110-4 2 2 0 010 4zm0 6a2 2 0 110-4 2 2 0 010 4z" />
+                                    </svg>
+                                  </button>
+                                  {isMenuOpen && (
+                                    <div className="absolute right-0 top-full mt-1 w-40 rounded-lg bg-surface-700 border border-surface-600 shadow-xl z-50 py-1">
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          setMenuOpenMemberId(null);
+                                          setExpandedMemberId(isExpanded ? null : member.id);
+                                        }}
+                                        className="w-full text-left px-3 py-2 text-sm text-surface-200 hover:bg-surface-600/60 transition-colors"
+                                      >
+                                        Link accounts
+                                      </button>
+                                      {canAdministerOrg && (
+                                        <>
+                                          <button
+                                            type="button"
+                                            onClick={() => {
+                                              setMenuOpenMemberId(null);
+                                              const nextRole: 'admin' | 'member' = isOrgAdminMember ? 'member' : 'admin';
+                                              void handleUpdateMemberRole(member.id, nextRole);
+                                            }}
+                                            disabled={updateMemberRoleMutation.isPending}
+                                            className="w-full text-left px-3 py-2 text-sm text-surface-200 hover:bg-surface-600/60 transition-colors disabled:opacity-50"
+                                          >
+                                            {isOrgAdminMember ? 'Demote to user' : 'Promote to admin'}
+                                          </button>
+                                          <button
+                                            type="button"
+                                            onClick={() => {
+                                              setMenuOpenMemberId(null);
+                                              void handleDeleteMember(member.id);
+                                            }}
+                                            disabled={deleteMemberMutation.isPending}
+                                            className="w-full text-left px-3 py-2 text-sm text-red-400 hover:bg-surface-600/60 transition-colors disabled:opacity-50"
+                                          >
+                                            Delete User
+                                          </button>
+                                        </>
+                                      )}
+                                    </div>
+                                  )}
+                                </div>
                               )}
-                              <p className="text-sm text-surface-400 truncate">{member.email}</p>
                             </div>
                             {/* Identity badges */}
-                            <div className="flex items-center gap-1.5">
-                              {isGuest && (
-                                <button
-                                  type="button"
-                                  onClick={() => void handleToggleGuestUser()}
-                                  disabled={updateGuestUserMutation.isPending}
-                                  className={`px-2 py-1 text-[10px] font-medium rounded transition-colors disabled:opacity-50 ${
-                                    guestUserEnabled
-                                      ? 'bg-amber-500/20 text-amber-100 hover:bg-amber-500/30'
-                                      : 'bg-surface-700/40 text-surface-200 hover:bg-surface-700/60'
-                                  }`}
-                                >
-                                  {updateGuestUserMutation.isPending
-                                    ? 'Saving...'
-                                    : guestUserEnabled
-                                      ? 'Enabled'
-                                      : 'Disabled'}
-                                </button>
-                              )}
+                            <div className="flex items-center gap-1.5 flex-wrap">
                               {identities.length > 0 ? (
                                 [...new Set(identities.map((i) => i.source))].map((src) => (
                                   <span
@@ -970,61 +1141,6 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
                                 !isGuest && <span className="text-xs text-surface-500">No links</span>
                               )}
                             </div>
-                            {/* Three-dots menu */}
-                            {!isGuest && (
-                              <div className="relative flex-shrink-0">
-                                <button
-                                  type="button"
-                                  onClick={(e) => { e.stopPropagation(); setMenuOpenMemberId(isMenuOpen ? null : member.id); }}
-                                  className="p-1 rounded hover:bg-surface-700/60 transition-colors text-surface-400 hover:text-surface-200"
-                                >
-                                  <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
-                                    <path d="M10 6a2 2 0 110-4 2 2 0 010 4zm0 6a2 2 0 110-4 2 2 0 010 4zm0 6a2 2 0 110-4 2 2 0 010 4z" />
-                                  </svg>
-                                </button>
-                                {isMenuOpen && (
-                                  <div className="absolute right-0 top-full mt-1 w-40 rounded-lg bg-surface-700 border border-surface-600 shadow-xl z-50 py-1">
-                                    <button
-                                      type="button"
-                                      onClick={() => {
-                                        setMenuOpenMemberId(null);
-                                        setExpandedMemberId(isExpanded ? null : member.id);
-                                      }}
-                                      className="w-full text-left px-3 py-2 text-sm text-surface-200 hover:bg-surface-600/60 transition-colors"
-                                    >
-                                      Link accounts
-                                    </button>
-                                    {canAdministerOrg && (
-                                      <>
-                                        <button
-                                          type="button"
-                                          onClick={() => {
-                                            setMenuOpenMemberId(null);
-                                            const nextRole: 'admin' | 'member' = isOrgAdminMember ? 'member' : 'admin';
-                                            void handleUpdateMemberRole(member.id, nextRole);
-                                          }}
-                                          disabled={updateMemberRoleMutation.isPending}
-                                          className="w-full text-left px-3 py-2 text-sm text-surface-200 hover:bg-surface-600/60 transition-colors disabled:opacity-50"
-                                        >
-                                          {isOrgAdminMember ? 'Demote to user' : 'Promote to admin'}
-                                        </button>
-                                        <button
-                                          type="button"
-                                          onClick={() => {
-                                            setMenuOpenMemberId(null);
-                                            void handleDeleteMember(member.id);
-                                          }}
-                                          disabled={deleteMemberMutation.isPending}
-                                          className="w-full text-left px-3 py-2 text-sm text-red-400 hover:bg-surface-600/60 transition-colors disabled:opacity-50"
-                                        >
-                                          Delete User
-                                        </button>
-                                      </>
-                                    )}
-                                  </div>
-                                )}
-                              </div>
-                            )}
                           </div>
 
                           {/* Expanded identity details */}
@@ -1032,22 +1148,21 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
                             <div className="px-3 pb-3 pt-1 border-t border-surface-700/50">
                               <p className="text-xs text-surface-500 mb-2">Linked identities</p>
                               {identities.length > 0 ? (
-                                <div className="space-y-1.5">
+                                <div className="space-y-1 sm:space-y-1.5">
                                   {identities.map((identity) => (
                                     <div
                                       key={identity.id}
-                                      className="flex items-center gap-2 text-xs px-2 py-1.5 rounded bg-surface-700/30"
+                                      className="grid grid-cols-[auto,minmax(0,1fr),auto] items-center gap-x-2 gap-y-1 text-xs px-2 py-1.5 rounded bg-surface-700/30"
                                     >
-                                      <span className={`px-1.5 py-0.5 font-medium rounded ${sourceColor(identity.source)}`}>
-                                        {sourceLabel(identity.source)}
-                                      </span>
-                                      <span className="text-surface-300 truncate">
-                                        {identity.externalEmail ?? identity.externalUserid ?? 'Unknown'}
-                                      </span>
-                                      <div className="ml-auto flex items-center gap-2 whitespace-nowrap">
-                                        <span className="text-surface-500">
-                                          {identity.matchSource.replace(/_/g, ' ')}
+                                      <div className="flex items-center gap-2 min-w-0 col-span-2">
+                                        <span className={`px-1.5 py-0.5 font-medium rounded whitespace-nowrap ${sourceColor(identity.source)}`}>
+                                          {sourceLabel(identity.source)}
                                         </span>
+                                        <span className="text-surface-300 truncate">
+                                          {identity.externalEmail ?? identity.externalUserid ?? 'Unknown'}
+                                        </span>
+                                      </div>
+                                      <div className="flex items-center justify-end">
                                         {canUnlinkForMember && (
                                           <button
                                             onClick={() => void handleUnlinkIdentity(identity.id)}
@@ -1057,6 +1172,11 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
                                             Unlink
                                           </button>
                                         )}
+                                      </div>
+                                      <div className="col-span-3 flex items-center gap-2 text-[11px] text-surface-500">
+                                        <span className="truncate">
+                                          {identity.matchSource.replace(/_/g, ' ')}
+                                        </span>
                                       </div>
                                     </div>
                                   ))}
@@ -1089,12 +1209,12 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
                                         key={ui.id}
                                         onClick={() => void handleLinkIdentity(member.id, ui.id)}
                                         disabled={linkIdentityMutation.isPending || unlinkIdentityMutation.isPending}
-                                        className="flex items-center gap-2 text-xs px-2 py-1.5 rounded bg-surface-700/20 hover:bg-surface-700/50 transition-colors w-full text-left disabled:opacity-50"
+                                        className="grid grid-cols-[auto,minmax(0,1fr),auto] items-center gap-2 text-xs px-2 py-1.5 rounded bg-surface-700/20 hover:bg-surface-700/50 transition-colors w-full text-left disabled:opacity-50"
                                       >
-                                        <span className={`px-1.5 py-0.5 font-medium rounded ${sourceColor(ui.source)}`}>
+                                        <span className={`px-1.5 py-0.5 font-medium rounded whitespace-nowrap ${sourceColor(ui.source)}`}>
                                           {sourceLabel(ui.source)}
                                         </span>
-                                        <span className="text-surface-400 truncate">
+                                        <span className="text-surface-400 truncate min-w-0">
                                           {ui.externalEmail ?? ui.externalUserid}
                                         </span>
                                         <span className="ml-auto text-primary-400 whitespace-nowrap">+ Link</span>
@@ -1456,6 +1576,11 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
                         </select>
                         <p className="text-xs text-surface-500 mt-1">Used for summaries, titles, and background tasks</p>
                       </div>
+                      {modelFamilyWarning && (
+                        <p className="text-xs text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded-md px-2.5 py-2">
+                          {modelFamilyWarning}
+                        </p>
+                      )}
                       <div>
                         <label className="block text-sm text-surface-400 mb-1.5">Workflow model</label>
                         <select

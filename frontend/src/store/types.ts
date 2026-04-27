@@ -130,6 +130,13 @@ export interface ChatSummary {
   participants?: Participant[];
   matchSnippet?: string | null; // Search match context snippet
   matchCount?: number; // Number of occurrences in conversation
+  workspaceId?: string | null;
+  source?: string | null;
+  sourceChannelId?: string | null;
+  normalizedChannelId?: string | null;
+  resolvedChannelName?: string | null;
+  groupBucketType?: "pinned" | "direct" | "channel" | "uncategorized";
+  groupBucketKey?: string;
 }
 
 // Workstream (semantic Home) types
@@ -168,6 +175,12 @@ export interface WorkstreamsResponse {
 export interface TextBlock {
   type: "text";
   text: string;
+  /**
+   * Optional sender category for non-human messages persisted for UX context.
+   * Example: "other_bot" for externally-authored bot messages in Slack DMs.
+   */
+  sender_category?: string;
+  senderCategory?: string;
 }
 
 export interface ToolUseBlock {
@@ -377,4 +390,5 @@ export type AdminPanelTab =
   | "users"
   | "organizations"
   | "sources"
-  | "jobs";
+  | "jobs"
+  | "graph-magic";

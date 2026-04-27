@@ -2,6 +2,8 @@ import asyncio
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
+import pytest
+
 from connectors.slack import SlackConnector
 
 
@@ -71,6 +73,165 @@ def test_execute_action_fetch_channel_history_returns_normalized_messages(monkey
 
     assert result["ok"] is True
     assert result["count"] == 1
+
+
+def test_query_read_file_by_id_returns_text_content(monkeypatch) -> None:
+    connector = SlackConnector(organization_id="00000000-0000-0000-0000-000000000001")
+
+    async def _fake_make_request(method: str, endpoint: str, **kwargs: object):
+        assert method == "GET"
+        assert endpoint == "files.info"
+        assert kwargs.get("params") == {"file": "F123"}
+        return {
+            "ok": True,
+            "file": {
+                "id": "F123",
+                "name": "notes.txt",
+                "mimetype": "text/plain",
+                "url_private_download": "https://files.slack.com/files-pri/T/F123/download/notes.txt",
+            },
+        }
+
+    async def _fake_download_file(url_private: str) -> bytes:
+        assert "F123" in url_private
+        return b"hello from slack"
+
+    monkeypatch.setattr(connector, "_make_request", _fake_make_request)
+    monkeypatch.setattr(connector, "download_file", _fake_download_file)
+
+    result = asyncio.run(connector.query("read_file:F123"))
+    assert result["ok"] is True
+    assert result["file"]["filename"] == "notes.txt"
+    assert result["file"]["content"] == "hello from slack"
+
+
+def test_query_read_file_by_url_returns_base64_for_binary(monkeypatch) -> None:
+    connector = SlackConnector(organization_id="00000000-0000-0000-0000-000000000001")
+
+    async def _fake_download_file(url_private: str) -> bytes:
+        assert url_private == "https://files.slack.com/files-pri/T/F999/download/blob.bin"
+        return b"\x01\x02"
+
+    monkeypatch.setattr(connector, "download_file", _fake_download_file)
+
+    result = asyncio.run(
+        connector.query("read_file:https://files.slack.com/files-pri/T/F999/download/blob.bin")
+    )
+    assert result["ok"] is True
+    assert result["file"]["filename"] == "slack_file"
+    assert result["file"]["mime_type"] == "application/octet-stream"
+    assert result["file"]["content_base64"] == "AQI="
+    assert "Binary file returned as base64" in result["file"]["note"]
+
+
+def test_query_read_file_from_message_permalink_downloads_attached_files(monkeypatch) -> None:
+    connector = SlackConnector(organization_id="00000000-0000-0000-0000-000000000001")
+
+    async def _fake_get_channel_messages(
+        channel_id: str,
+        oldest: float | None = None,
+        limit: int = 100,
+        latest: str | None = None,
+        inclusive: bool = False,
+    ) -> list[dict[str, object]]:
+        assert channel_id == "C123ABC45"
+        assert latest == "1711405920.999999"
+        assert limit == 1
+        assert inclusive is True
+        assert oldest is None
+        return [
+            {
+                "ts": "1711405920.999999",
+                "files": [
+                    {
+                        "id": "F111",
+                        "name": "first.txt",
+                        "mimetype": "text/plain",
+                        "url_private_download": "https://files.slack.com/files-pri/T/F111/download/first.txt",
+                    },
+                    {
+                        "id": "F222",
+                        "name": "second.txt",
+                        "mimetype": "text/plain",
+                        "url_private_download": "https://files.slack.com/files-pri/T/F222/download/second.txt",
+                    },
+                ],
+            }
+        ]
+
+    async def _fake_make_request(method: str, endpoint: str, **kwargs: object):
+        assert method == "GET"
+        assert endpoint == "files.info"
+        file_id = (kwargs.get("params") or {}).get("file")
+        if file_id == "F111":
+            return {
+                "ok": True,
+                "file": {
+                    "id": "F111",
+                    "name": "first.txt",
+                    "mimetype": "text/plain",
+                    "url_private_download": "https://files.slack.com/files-pri/T/F111/download/first.txt",
+                },
+            }
+        assert file_id == "F222"
+        return {
+            "ok": True,
+            "file": {
+                "id": "F222",
+                "name": "second.txt",
+                "mimetype": "text/plain",
+                "url_private_download": "https://files.slack.com/files-pri/T/F222/download/second.txt",
+            },
+        }
+
+    async def _fake_download_file(url_private: str) -> bytes:
+        if "F111" in url_private:
+            return b"first content"
+        assert "F222" in url_private
+        return b"second content"
+
+    monkeypatch.setattr(connector, "get_channel_messages", _fake_get_channel_messages)
+    monkeypatch.setattr(connector, "_make_request", _fake_make_request)
+    monkeypatch.setattr(connector, "download_file", _fake_download_file)
+
+    result = asyncio.run(
+        connector.query(
+            "read_file:https://acme.slack.com/archives/C123ABC45/p1711405920999999"
+        )
+    )
+    assert result["ok"] is True
+    assert result["source"]["type"] == "slack_message_permalink"
+    assert result["file"]["filename"] == "first.txt"
+    assert [f["filename"] for f in result["files"]] == ["first.txt", "second.txt"]
+    assert result["files"][0]["content"] == "first content"
+    assert result["files"][1]["content"] == "second content"
+
+
+def test_query_read_file_from_message_permalink_without_attachments_returns_error(monkeypatch) -> None:
+    connector = SlackConnector(organization_id="00000000-0000-0000-0000-000000000001")
+
+    async def _fake_get_channel_messages(
+        channel_id: str,
+        oldest: float | None = None,
+        limit: int = 100,
+        latest: str | None = None,
+        inclusive: bool = False,
+    ) -> list[dict[str, object]]:
+        assert channel_id == "C999"
+        assert latest == "1711405920.999999"
+        assert oldest is None
+        assert limit == 1
+        assert inclusive is True
+        return [{"ts": "1711405920.999999", "files": []}]
+
+    monkeypatch.setattr(connector, "get_channel_messages", _fake_get_channel_messages)
+
+    result = asyncio.run(
+        connector.query(
+            "read_file:https://acme.slack.com/archives/C999/p1711405920999999"
+        )
+    )
+    assert "No files are attached to Slack message permalink" in result["error"]
 
 
 
@@ -229,6 +390,59 @@ def test_post_message_retries_with_org_credentials_on_channel_not_found(monkeypa
     assert result["ok"] is True
     assert calls == ["11111111-1111-1111-1111-111111111111", None]
     assert connector.user_id == "11111111-1111-1111-1111-111111111111"
+
+
+def test_post_message_uses_fallback_text_extracted_from_blocks(monkeypatch) -> None:
+    connector = SlackConnector(organization_id="00000000-0000-0000-0000-000000000001")
+
+    captured: dict[str, object] = {}
+
+    async def _fake_make_request(method: str, endpoint: str, **kwargs: object):
+        captured["method"] = method
+        captured["endpoint"] = endpoint
+        captured["json_data"] = kwargs.get("json_data")
+        return {"ok": True, "channel": "C999", "ts": "1.2", "message": {"text": "hello"}}
+
+    monkeypatch.setattr(connector, "_make_request", _fake_make_request)
+
+    result = asyncio.run(
+        connector.post_message(
+            "C999",
+            "",
+            blocks=[
+                {
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": "*Deployment finished*"},
+                }
+            ],
+        )
+    )
+
+    assert result["ok"] is True
+    assert captured["method"] == "POST"
+    assert captured["endpoint"] == "chat.postMessage"
+    assert captured["json_data"] == {
+        "channel": "C999",
+        "text": "*Deployment finished*",
+        "blocks": [
+            {
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": "*Deployment finished*"},
+            }
+        ],
+    }
+
+
+def test_post_message_rejects_empty_text_when_blocks_missing(monkeypatch) -> None:
+    connector = SlackConnector(organization_id="00000000-0000-0000-0000-000000000001")
+
+    async def _fake_make_request(method: str, endpoint: str, **kwargs: object):
+        raise AssertionError("chat.postMessage should not be called for empty message payloads")
+
+    monkeypatch.setattr(connector, "_make_request", _fake_make_request)
+
+    with pytest.raises(ValueError, match="non-empty"):
+        asyncio.run(connector.post_message("C999", ""))
 
 
 def test_send_direct_message_retries_other_slack_identities_on_user_not_found(monkeypatch) -> None:

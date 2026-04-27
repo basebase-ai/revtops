@@ -279,12 +279,25 @@ class AppsConnector(BaseConnector):
                 )
             )
             app: App | None = result.scalar_one_or_none()
+            if not app:
+                return {"error": f"App not found: {app_id}"}
 
-        if not app:
-            return {"error": f"App not found: {app_id}"}
+            # Materialize all needed fields while the instance is still bound
+            # to the active SQLAlchemy session. This avoids DetachedInstanceError
+            # when attribute refresh is attempted after context exit.
+            title: str = app.title
+            description: str | None = app.description
+            queries: dict[str, Any] = dict(app.queries or {})
+            frontend_code: str = app.frontend_code
+
+        logger.debug(
+            "[AppsConnector] Read app payload materialized inside session: app_id=%s query_count=%d",
+            app_id,
+            len(queries),
+        )
 
         queries_with_line_numbers: dict[str, Any] = {}
-        for qname, qspec in app.queries.items():
+        for qname, qspec in queries.items():
             queries_with_line_numbers[qname] = {
                 **qspec,
                 "sql_with_lines": self._add_line_numbers(qspec.get("sql", "")),
@@ -293,11 +306,11 @@ class AppsConnector(BaseConnector):
         return {
             "status": "success",
             "app_id": app_id,
-            "title": app.title,
-            "description": app.description,
+            "title": title,
+            "description": description,
             "queries": queries_with_line_numbers,
-            "frontend_code": app.frontend_code,
-            "frontend_code_with_lines": self._add_line_numbers(app.frontend_code),
+            "frontend_code": frontend_code,
+            "frontend_code_with_lines": self._add_line_numbers(frontend_code),
         }
 
     async def _resolve_user_from_external_actor(
@@ -402,6 +415,7 @@ class AppsConnector(BaseConnector):
         conversation_id: str | None = data.get("conversation_id")
         user_uuid: UUID | None = None
         conversation_uuid: UUID | None = None
+        visibility: str = "team"
         owner_override_raw: Any = data.get(" app created by")
         owner_override_id: str | None = None
         if owner_override_raw is not None:
@@ -457,20 +471,31 @@ class AppsConnector(BaseConnector):
                             Conversation.user_id,
                             Conversation.source,
                             Conversation.source_user_id,
+                            Conversation.scope,
                         ).where(
                             Conversation.id == conversation_uuid,
                         )
                     )
-                    conversation_record: tuple[UUID | None, str | None, str | None] | None = row.one_or_none()
+                    conversation_record: tuple[UUID | None, str | None, str | None, str | None] | None = row.one_or_none()
                     conversation_user_id: UUID | None = None
                     conversation_source: str | None = None
                     conversation_source_user_id: str | None = None
+                    conversation_scope: str | None = None
                     if conversation_record is not None:
                         (
                             conversation_user_id,
                             conversation_source,
                             conversation_source_user_id,
+                            conversation_scope,
                         ) = conversation_record
+                    normalized_scope: str = (conversation_scope or "").strip().lower()
+                    if normalized_scope == "private":
+                        visibility = "private"
+                        logger.info(
+                            "[AppsConnector] Inherited private visibility from conversation scope: conversation_id=%s scope=%s",
+                            conversation_id,
+                            conversation_scope,
+                        )
                     if conversation_user_id is not None:
                         user_uuid = conversation_user_id
                         logger.info(
@@ -563,6 +588,7 @@ class AppsConnector(BaseConnector):
                 queries=queries,
                 frontend_code=frontend_code,
                 frontend_code_compiled=compiled_code,
+                visibility=visibility,
                 conversation_id=conversation_uuid,
                 message_id=msg_id_str,
             )

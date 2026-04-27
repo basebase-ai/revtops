@@ -1,7 +1,9 @@
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import httpx
 import pytest
+from openai import APIStatusError
 
 from services.llm_adapter import OpenAIAdapter
 
@@ -14,10 +16,20 @@ class _EmptyAsyncIterator:
         raise StopAsyncIteration
 
 
+def _openai_api_status_error(message: str, status_code: int = 404) -> APIStatusError:
+    request = httpx.Request("POST", "https://api.openai.com/v1/chat/completions")
+    response = httpx.Response(status_code=status_code, request=request, headers={"x-request-id": "req_test"})
+    return APIStatusError(
+        message=message,
+        response=response,
+        body={"error": {"type": "not_found_error", "message": message}},
+    )
+
+
 def test_openai_gpt5_uses_max_completion_tokens():
     adapter = OpenAIAdapter(api_key="test-key")
 
-    assert adapter._build_token_limit_kwargs(model="gpt-5", max_tokens=1234) == {
+    assert adapter._build_token_limit_kwargs(model="gpt-5.5", max_tokens=1234) == {
         "max_completion_tokens": 1234
     }
 
@@ -34,7 +46,7 @@ def test_openai_gpt5_with_provider_prefix_uses_max_completion_tokens():
     adapter = OpenAIAdapter(api_key="test-key")
 
     assert adapter._build_token_limit_kwargs(
-        model="openai/GPT-5-mini",
+        model="openai/GPT-5.5-mini",
         max_tokens=777,
     ) == {"max_completion_tokens": 777}
 
@@ -126,3 +138,123 @@ async def test_openai_stream_does_not_pass_duplicate_model_kwarg():
     assert create_mock.await_count == 1
     call_kwargs = create_mock.await_args.kwargs
     assert call_kwargs["model"] == "gpt-4o-mini"
+
+
+@pytest.mark.asyncio
+async def test_openai_stream_falls_back_when_gpt5_not_found():
+    adapter = OpenAIAdapter(api_key="test-key")
+    create_mock = AsyncMock(
+        side_effect=[
+            _openai_api_status_error("model: gpt-5.5"),
+            _EmptyAsyncIterator(),
+        ]
+    )
+    adapter._client = SimpleNamespace(  # type: ignore[assignment]
+        chat=SimpleNamespace(completions=SimpleNamespace(create=create_mock))
+    )
+
+    events = [
+        event
+        async for event in adapter.stream(
+            model="gpt-5.5",
+            system="sys",
+            messages=[{"role": "user", "content": "hi"}],
+            max_tokens=42,
+        )
+    ]
+
+    assert events == []
+    assert create_mock.await_count == 2
+    assert create_mock.await_args_list[0].kwargs["model"] == "gpt-5.5"
+    assert create_mock.await_args_list[1].kwargs["model"] == "gpt-5"
+
+
+@pytest.mark.asyncio
+async def test_openai_complete_falls_back_when_gpt5_not_found():
+    adapter = OpenAIAdapter(api_key="test-key")
+    completion_response = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content="fallback answer", tool_calls=None))],
+        usage=SimpleNamespace(prompt_tokens=1, completion_tokens=2),
+    )
+    create_mock = AsyncMock(
+        side_effect=[
+            _openai_api_status_error("model: gpt-5.5"),
+            completion_response,
+        ]
+    )
+    adapter._client = SimpleNamespace(  # type: ignore[assignment]
+        chat=SimpleNamespace(completions=SimpleNamespace(create=create_mock))
+    )
+
+    completed = await adapter.complete(
+        model="gpt-5.5",
+        system="sys",
+        messages=[{"role": "user", "content": "hi"}],
+        max_tokens=42,
+    )
+
+    assert completed.input_tokens == 1
+    assert completed.output_tokens == 2
+    assert create_mock.await_count == 2
+    assert create_mock.await_args_list[0].kwargs["model"] == "gpt-5.5"
+    assert create_mock.await_args_list[1].kwargs["model"] == "gpt-5"
+
+
+@pytest.mark.asyncio
+async def test_openai_stream_falls_back_from_legacy_gpt5_to_gpt55():
+    adapter = OpenAIAdapter(api_key="test-key")
+    create_mock = AsyncMock(
+        side_effect=[
+            _openai_api_status_error("model: gpt-5"),
+            _EmptyAsyncIterator(),
+        ]
+    )
+    adapter._client = SimpleNamespace(  # type: ignore[assignment]
+        chat=SimpleNamespace(completions=SimpleNamespace(create=create_mock))
+    )
+
+    events = [
+        event
+        async for event in adapter.stream(
+            model="gpt-5",
+            system="sys",
+            messages=[{"role": "user", "content": "hi"}],
+            max_tokens=42,
+        )
+    ]
+
+    assert events == []
+    assert create_mock.await_count == 2
+    assert create_mock.await_args_list[0].kwargs["model"] == "gpt-5"
+    assert create_mock.await_args_list[1].kwargs["model"] == "gpt-5.5"
+
+
+@pytest.mark.asyncio
+async def test_openai_complete_falls_back_from_legacy_gpt5_to_gpt55():
+    adapter = OpenAIAdapter(api_key="test-key")
+    completion_response = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content="fallback answer", tool_calls=None))],
+        usage=SimpleNamespace(prompt_tokens=1, completion_tokens=2),
+    )
+    create_mock = AsyncMock(
+        side_effect=[
+            _openai_api_status_error("model: gpt-5"),
+            completion_response,
+        ]
+    )
+    adapter._client = SimpleNamespace(  # type: ignore[assignment]
+        chat=SimpleNamespace(completions=SimpleNamespace(create=create_mock))
+    )
+
+    completed = await adapter.complete(
+        model="gpt-5",
+        system="sys",
+        messages=[{"role": "user", "content": "hi"}],
+        max_tokens=42,
+    )
+
+    assert completed.input_tokens == 1
+    assert completed.output_tokens == 2
+    assert create_mock.await_count == 2
+    assert create_mock.await_args_list[0].kwargs["model"] == "gpt-5"
+    assert create_mock.await_args_list[1].kwargs["model"] == "gpt-5.5"

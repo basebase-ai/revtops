@@ -66,6 +66,14 @@ async def test_persist_channel_activity_uses_channel_name():
         message_type=MessageType.DIRECT,
         external_user_id="U123",
         message_id="1710711600.000", # Fixed TS for deterministic testing
+        raw_attachments=[
+            {
+                "id": "F123",
+                "name": "proposal.docx",
+                "url_private_download": "https://files.slack.com/files-pri/T1-F123/download/proposal.docx",
+                "mimetype": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            }
+        ],
         messenger_context={
             "workspace_id": workspace_id,
             "channel_id": channel_id,
@@ -97,6 +105,8 @@ async def test_persist_channel_activity_uses_channel_name():
         assert passed_values["subject"] == f"#{channel_name}"
         assert passed_values["custom_fields"]["channel_name"] == channel_name
         assert passed_values["custom_fields"]["channel_id"] == channel_id
+        assert passed_values["custom_fields"]["files"][0]["id"] == "F123"
+        assert passed_values["custom_fields"]["files"][0]["name"] == "proposal.docx"
         
 @pytest.mark.asyncio
 async def test_enrich_message_context_does_not_overwrite_existing():
@@ -478,7 +488,7 @@ def test_summarize_channel_history_if_needed_compresses_oversized_payload():
         thread_expansions=thread_expansions,
     )
 
-    assert "quick summary of newest 300 channel messages" in result
+    assert "quick summary of newest 100 channel messages" in result
     assert "Most active threads by reply count" in result
     assert len(result) <= 12000
 
@@ -690,3 +700,120 @@ def test_format_channel_history_context_inserts_thread_messages_at_thread_start(
     latest_non_thread_idx = rendered.index("latest non-thread message")
 
     assert starter_idx < reply_one_idx < reply_two_idx < middle_non_thread_idx < latest_non_thread_idx
+
+
+def test_format_single_slack_context_line_includes_file_references():
+    messenger = SlackMessenger()
+    line = messenger._format_single_slack_context_line(
+        {
+            "ts": "1710711602.000",
+            "user": "U3",
+            "text": "Please review this",
+            "files": [
+                {
+                    "id": "F123",
+                    "name": "q1-report.pdf",
+                    "url_private_download": "https://files.slack.com/files-pri/T1-F123/download/q1-report.pdf",
+                    "mimetype": "application/pdf",
+                }
+            ],
+        }
+    )
+
+    assert line is not None
+    assert "q1-report.pdf" in line
+    assert "<slack_file_ref id=F123" in line
+    assert "url=https://files.slack.com/files-pri/T1-F123/download/q1-report.pdf" in line
+
+
+def test_format_single_slack_context_line_includes_all_file_links_for_message():
+    messenger = SlackMessenger()
+    line = messenger._format_single_slack_context_line(
+        {
+            "ts": "1710711602.000",
+            "user": "U3",
+            "text": "Please review all attachments",
+            "files": [
+                {
+                    "id": "F111",
+                    "name": "first.txt",
+                    "url_private_download": "https://files.slack.com/files-pri/T1-F111/download/first.txt",
+                    "mimetype": "text/plain",
+                },
+                {
+                    "id": "F222",
+                    "name": "second.txt",
+                    "url_private": "https://files.slack.com/files-pri/T1-F222/download/second.txt",
+                    "mimetype": "text/plain",
+                },
+                {
+                    "id": "F333",
+                    "name": "third.txt",
+                    "url_private_download": "https://files.slack.com/files-pri/T1-F333/download/third.txt",
+                    "mimetype": "text/plain",
+                },
+                {
+                    "id": "F444",
+                    "name": "fourth.txt",
+                    "url_private_download": "https://files.slack.com/files-pri/T1-F444/download/fourth.txt",
+                    "mimetype": "text/plain",
+                },
+            ],
+        }
+    )
+
+    assert line is not None
+    assert "url=https://files.slack.com/files-pri/T1-F111/download/first.txt" in line
+    assert "url=https://files.slack.com/files-pri/T1-F222/download/second.txt" in line
+    assert "url=https://files.slack.com/files-pri/T1-F333/download/third.txt" in line
+    assert "url=https://files.slack.com/files-pri/T1-F444/download/fourth.txt" in line
+    assert "+1 more" not in line
+
+
+@pytest.mark.asyncio
+async def test_get_cached_channel_context_payload_from_activity_preserves_file_metadata():
+    messenger = SlackMessenger()
+    org_id = str(uuid4())
+
+    mock_session = AsyncMock()
+    mock_result = MagicMock()
+    mock_result.all.return_value = [
+        (
+            "C456:1710711600.000",
+            "Hey Guys, here is Farooq's proposal",
+            {
+                "channel_id": "C456",
+                "user_id": "U_JACK",
+                "thread_ts": "1710711600.000",
+                "files": [
+                    {
+                        "id": "F123",
+                        "name": "proposal.docx",
+                        "url_private_download": "https://files.slack.com/files-pri/T1-F123/download/proposal.docx",
+                        "mimetype": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    }
+                ],
+            },
+            None,
+            None,
+        )
+    ]
+    mock_session.execute.return_value = mock_result
+    mock_session_ctx = MagicMock(
+        __aenter__=AsyncMock(return_value=mock_session),
+        __aexit__=AsyncMock(return_value=None),
+    )
+
+    with patch("messengers.slack.get_admin_session", return_value=mock_session_ctx):
+        payload = await messenger._get_cached_channel_context_payload_from_activity(
+            organization_id=org_id,
+            channel_id="C456",
+        )
+
+    assert payload is not None
+    channel_messages, _thread_expansions = payload
+    assert len(channel_messages) == 1
+    assert channel_messages[0]["files"][0]["id"] == "F123"
+    rendered = messenger._format_single_slack_context_line(channel_messages[0])
+    assert rendered is not None
+    assert "<slack_file_ref id=F123" in rendered

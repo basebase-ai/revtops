@@ -10,11 +10,13 @@ Responsibilities:
 """
 
 import asyncio
+import base64
 import logging
 import re
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Optional
+from urllib.parse import urlparse
 
 import httpx
 from sqlalchemy import func, select
@@ -22,6 +24,10 @@ from sqlalchemy import func, select
 
 _SEPARATOR_ROW_RE: re.Pattern[str] = re.compile(
     r'^\|?[\s\-:|]+\|?$'
+)
+_SLACK_MESSAGE_PERMALINK_RE: re.Pattern[str] = re.compile(
+    r"^/archives/(?P<channel>[A-Z0-9]+)/p(?P<raw_ts>\d{16,})$",
+    re.IGNORECASE,
 )
 _MARKDOWN_TABLE_CODE_BLOCK_TEMPLATE: str = "```\n{table}\n```"
 _markdown_logger = logging.getLogger(__name__)
@@ -127,6 +133,38 @@ def markdown_to_mrkdwn(text: str) -> tuple[str, Optional[list[dict[str, Any]]]]:
 
     return (text, out_blocks)
 
+
+def _extract_fallback_text_from_blocks(blocks: list[dict[str, Any]]) -> str:
+    """Best-effort plain-text fallback extracted from Slack blocks."""
+
+    max_length: int = 280
+    fragments: list[str] = []
+
+    def _walk(node: Any) -> None:
+        if len(" ".join(fragments)) >= max_length:
+            return
+        if isinstance(node, dict):
+            text_value = node.get("text")
+            if isinstance(text_value, str) and text_value.strip():
+                fragments.append(text_value.strip())
+            for key in ("elements", "fields", "accessory", "title"):
+                child = node.get(key)
+                if child is not None:
+                    _walk(child)
+            for value in node.values():
+                if isinstance(value, (dict, list)):
+                    _walk(value)
+            return
+        if isinstance(node, list):
+            for child in node:
+                _walk(child)
+
+    _walk(blocks)
+    fallback: str = " ".join(fragment for fragment in fragments if fragment).strip()
+    if len(fallback) > max_length:
+        fallback = f"{fallback[: max_length - 3].rstrip()}..."
+    return fallback
+
 from api.websockets import broadcast_sync_progress
 from connectors.base import BaseConnector, ExternalConnectionRevokedError, build_connection_removed_message
 from connectors.registry import (
@@ -201,6 +239,13 @@ Returns all channels the bot can see, with id, name, and is_private.
 Call via `query_on_connector(connector='slack', query='channel_info:<channel_id>')`.
 
 Returns details for a single channel including topic and purpose.
+
+## Query: read_file
+
+Call via `query_on_connector(connector='slack', query='read_file:<file_id_or_url>')`.
+
+Reads a Slack file by file ID (recommended) or a `url_private` URL and returns
+metadata + extracted text for text/PDF files. Binary files return base64.
 
 ## Action: send_message
 
@@ -1258,7 +1303,197 @@ Returns normalized messages for one channel since a cutoff (does not write to th
             if info:
                 return {"channel": {"id": info.get("id"), "name": info.get("name"), "is_private": info.get("is_private", False), "topic": (info.get("topic") or {}).get("value", ""), "purpose": (info.get("purpose") or {}).get("value", "")}}
             return {"error": f"Channel {channel_id} not found"}
-        return {"error": f"Unknown query: {request}. Supported: list_channels, channel_info:<channel_id>"}
+        if stripped.lower().startswith("read_file:"):
+            _, _, file_ref = stripped.partition(":")
+            file_ref = file_ref.strip()
+            if not file_ref:
+                return {"error": "read_file requires a file ID or url_private URL"}
+            return await self._read_file_for_query(file_ref)
+        return {"error": f"Unknown query: {request}. Supported: list_channels, channel_info:<channel_id>, read_file:<file_id_or_url>"}
+
+    async def _read_file_for_query(self, file_ref: str) -> dict[str, Any]:
+        """Download and normalize Slack file content for ``query_on_connector``."""
+        normalized_ref: str = file_ref.strip()
+        if normalized_ref.startswith("id="):
+            normalized_ref = normalized_ref[3:].strip()
+        if normalized_ref.startswith("url="):
+            normalized_ref = normalized_ref[4:].strip()
+
+        file_data: dict[str, Any] | None = None
+        download_url: str | None = None
+
+        if normalized_ref.startswith("http://") or normalized_ref.startswith("https://"):
+            permalink_payload: tuple[str, str] | None = self._parse_slack_message_permalink(
+                normalized_ref
+            )
+            if permalink_payload is not None:
+                channel_id, message_ts = permalink_payload
+                return await self._read_files_from_message_permalink(
+                    channel_id=channel_id,
+                    message_ts=message_ts,
+                    permalink=normalized_ref,
+                )
+            download_url = normalized_ref
+        else:
+            file_data = await self._make_request("GET", "files.info", params={"file": normalized_ref})
+            if not file_data.get("ok"):
+                return {"error": f"Slack files.info failed for file {normalized_ref}"}
+            file_obj: dict[str, Any] = file_data.get("file") or {}
+            download_url = file_obj.get("url_private_download") or file_obj.get("url_private")
+            file_data = file_obj
+
+        if not download_url:
+            return {"error": f"No download URL available for Slack file reference: {file_ref}"}
+
+        raw_bytes: bytes = await self.download_file(download_url)
+        filename: str = str((file_data or {}).get("name") or "slack_file")
+        mime_type: str = str((file_data or {}).get("mimetype") or "application/octet-stream")
+        size: int = len(raw_bytes)
+
+        content_text: str | None = None
+        if mime_type.startswith("text/") or filename.lower().endswith((".txt", ".md", ".csv", ".json", ".yaml", ".yml", ".xml")):
+            content_text = raw_bytes.decode("utf-8", errors="replace")
+        elif mime_type == "application/pdf" or filename.lower().endswith(".pdf"):
+            from services.file_handler import StoredFile, pdf_to_text_block
+
+            block = pdf_to_text_block(
+                StoredFile(
+                    upload_id="slack_query_file",
+                    filename=filename,
+                    mime_type=mime_type,
+                    size=size,
+                    data=raw_bytes,
+                )
+            )
+            content_text = str(block.get("text") or "")
+
+        if content_text is not None:
+            max_chars = 200_000
+            if len(content_text) > max_chars:
+                content_text = (
+                    content_text[:max_chars]
+                    + f"\n\n[Truncated — first {max_chars:,} characters shown of {len(content_text):,}]"
+                )
+            return {
+                "ok": True,
+                "file": {
+                    "filename": filename,
+                    "mime_type": mime_type,
+                    "size": size,
+                    "content": content_text,
+                },
+            }
+
+        encoded: str = base64.standard_b64encode(raw_bytes).decode("ascii")
+        return {
+            "ok": True,
+            "file": {
+                "filename": filename,
+                "mime_type": mime_type,
+                "size": size,
+                "content_base64": encoded,
+                "note": "Binary file returned as base64 because text extraction is not supported for this mime type.",
+            },
+        }
+
+    def _parse_slack_message_permalink(self, url: str) -> tuple[str, str] | None:
+        """Return ``(channel_id, message_ts)`` when URL is a Slack message permalink."""
+        try:
+            parsed = urlparse(url)
+        except Exception:
+            return None
+
+        if not parsed.netloc.lower().endswith("slack.com"):
+            return None
+
+        match = _SLACK_MESSAGE_PERMALINK_RE.match(parsed.path)
+        if not match:
+            return None
+
+        channel_id: str = str(match.group("channel") or "").upper()
+        raw_ts: str = str(match.group("raw_ts") or "").strip()
+        if not channel_id or len(raw_ts) < 7:
+            return None
+
+        normalized_ts: str = f"{raw_ts[:-6]}.{raw_ts[-6:]}"
+        return channel_id, normalized_ts
+
+    async def _read_files_from_message_permalink(
+        self,
+        *,
+        channel_id: str,
+        message_ts: str,
+        permalink: str,
+    ) -> dict[str, Any]:
+        """Resolve files attached to a Slack message permalink and return extracted payloads."""
+        logger.info(
+            "[slack] read_file resolving message permalink channel=%s ts=%s",
+            channel_id,
+            message_ts,
+        )
+        try:
+            messages: list[dict[str, Any]] = await self.get_channel_messages(
+                channel_id=channel_id,
+                latest=message_ts,
+                limit=1,
+                inclusive=True,
+            )
+        except Exception as exc:
+            logger.warning(
+                "[slack] Failed to resolve permalink to message channel=%s ts=%s error=%s",
+                channel_id,
+                message_ts,
+                exc,
+            )
+            return {
+                "error": (
+                    f"Slack could not resolve message permalink {permalink}: {exc}"
+                )
+            }
+
+        target_message: dict[str, Any] | None = None
+        for message in messages:
+            if str(message.get("ts") or "").strip() == message_ts:
+                target_message = message
+                break
+        if target_message is None:
+            return {"error": f"No Slack message found for permalink: {permalink}"}
+
+        files: list[dict[str, Any]] = target_message.get("files") or []
+        if not files:
+            return {"error": f"No files are attached to Slack message permalink: {permalink}"}
+
+        extracted_files: list[dict[str, Any]] = []
+        for file_entry in files:
+            file_id: str = str(file_entry.get("id") or "").strip()
+            file_url: str = str(
+                file_entry.get("url_private_download")
+                or file_entry.get("url_private")
+                or ""
+            ).strip()
+            if not file_id and not file_url:
+                continue
+            lookup_ref: str = file_id or file_url
+            file_result: dict[str, Any] = await self._read_file_for_query(lookup_ref)
+            if file_result.get("ok") and isinstance(file_result.get("file"), dict):
+                extracted_files.append(file_result["file"])
+
+        if not extracted_files:
+            return {
+                "error": f"Slack message permalink resolved, but no attached files could be downloaded: {permalink}"
+            }
+
+        return {
+            "ok": True,
+            "source": {
+                "type": "slack_message_permalink",
+                "channel_id": channel_id,
+                "ts": message_ts,
+                "permalink": permalink,
+            },
+            "file": extracted_files[0],
+            "files": extracted_files,
+        }
 
     async def execute_action(self, action: str, params: dict[str, Any]) -> dict[str, Any]:
         """Execute a side-effect action."""
@@ -1336,9 +1571,32 @@ Returns normalized messages for one channel since a cutoff (does not write to th
         else:
             formatted_text, _ = markdown_to_mrkdwn(text)
 
+        normalized_text: str = formatted_text.strip()
+        if not normalized_text and blocks:
+            normalized_text = _extract_fallback_text_from_blocks(blocks)
+            if normalized_text:
+                logger.info(
+                    "[SlackConnector] Derived fallback text from blocks for chat.postMessage channel=%s chars=%d",
+                    channel,
+                    len(normalized_text),
+                )
+            else:
+                normalized_text = "Notification"
+                logger.warning(
+                    "[SlackConnector] Missing fallback text and no extractable text in blocks; using default fallback channel=%s",
+                    channel,
+                )
+        if not normalized_text:
+            logger.error(
+                "[SlackConnector] Refusing to post empty Slack message channel=%s has_blocks=%s",
+                channel,
+                bool(blocks),
+            )
+            raise ValueError("Slack message text must be non-empty")
+
         payload: dict[str, Any] = {
             "channel": channel,
-            "text": formatted_text,
+            "text": normalized_text,
         }
         
         if thread_ts:

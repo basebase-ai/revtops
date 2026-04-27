@@ -25,6 +25,7 @@ class _FakeSession:
         *,
         message_user_id: UUID | None,
         conversation_user_id: UUID | None,
+        conversation_scope: str | None = None,
         org_handle: str | None = None,
         conversation_source: str | None = None,
         conversation_source_user_id: str | None = None,
@@ -33,6 +34,7 @@ class _FakeSession:
     ):
         self.message_user_id = message_user_id
         self.conversation_user_id = conversation_user_id
+        self.conversation_scope = conversation_scope
         self.org_handle = org_handle
         self.conversation_source = conversation_source
         self.conversation_source_user_id = conversation_source_user_id
@@ -52,6 +54,7 @@ class _FakeSession:
                     self.conversation_user_id,
                     self.conversation_source,
                     self.conversation_source_user_id,
+                    self.conversation_scope,
                 )
             )
         if "user_mappings_for_identity" in q:
@@ -326,3 +329,106 @@ def test_create_returns_org_handle_scoped_uri_when_handle_present(monkeypatch):
 
     assert result["status"] == "success"
     assert result["uri"].startswith("/acme/apps/")
+
+
+def test_create_sets_private_visibility_for_private_conversation(monkeypatch):
+    org_id = "00000000-0000-0000-0000-000000000010"
+    fake_session = _FakeSession(
+        message_user_id=None,
+        conversation_user_id=UUID("00000000-0000-0000-0000-000000000013"),
+        conversation_scope="private",
+    )
+
+    @asynccontextmanager
+    async def _fake_get_session(*_args, **_kwargs):
+        yield fake_session
+
+    async def _fake_warm(*_args, **_kwargs):
+        return None
+
+    async def _fake_test_execute_queries(*_args, **_kwargs):
+        return []
+
+    async def _fake_alternate(*_args, **_kwargs):
+        return []
+
+    monkeypatch.setattr("connectors.apps.get_session", _fake_get_session)
+    monkeypatch.setattr("connectors.apps.warm_public_preview_cache", _fake_warm)
+    monkeypatch.setattr("connectors.apps.get_alternate_slack_user_ids_for_identity", _fake_alternate)
+    monkeypatch.setattr("utils.transpile_jsx.transpile_jsx", lambda _code: (None,))
+    monkeypatch.setattr("connectors.apps.AppsConnector._test_execute_queries", _fake_test_execute_queries)
+
+    connector = AppsConnector(organization_id=org_id, user_id=None)
+    result = asyncio.run(
+        connector._create(
+            {
+                "title": "Private app",
+                "queries": {"q": {"sql": "SELECT 1 AS n", "params": {}}},
+                "frontend_code": "export default function App(){ return <div/>; }",
+                "conversation_id": "00000000-0000-0000-0000-000000000015",
+            }
+        )
+    )
+
+    assert result["status"] == "success"
+    assert fake_session.added[0].visibility == "private"
+
+
+def test_read_materializes_fields_before_session_exit(monkeypatch):
+    org_id = "00000000-0000-0000-0000-000000000010"
+    app_id = "00000000-0000-0000-0000-000000000099"
+
+    class _DetachedAwareApp:
+        def __init__(self) -> None:
+            self.detached = False
+
+        @property
+        def title(self):
+            if self.detached:
+                raise RuntimeError("detached")
+            return "Test App"
+
+        @property
+        def description(self):
+            if self.detached:
+                raise RuntimeError("detached")
+            return "desc"
+
+        @property
+        def queries(self):
+            if self.detached:
+                raise RuntimeError("detached")
+            return {"q1": {"sql": "SELECT 1 AS one", "params": {}}}
+
+        @property
+        def frontend_code(self):
+            if self.detached:
+                raise RuntimeError("detached")
+            return "export default function App(){ return <div/>; }"
+
+    class _ReadSession:
+        def __init__(self, app):
+            self.app = app
+
+        async def execute(self, _query, _params=None):
+            return _FakeExecuteResult(self.app)
+
+    app = _DetachedAwareApp()
+    fake_session = _ReadSession(app)
+
+    @asynccontextmanager
+    async def _fake_get_session(*_args, **_kwargs):
+        try:
+            yield fake_session
+        finally:
+            app.detached = True
+
+    monkeypatch.setattr("connectors.apps.get_session", _fake_get_session)
+
+    connector = AppsConnector(organization_id=org_id, user_id=None)
+    result = asyncio.run(connector._read(app_id))
+
+    assert result["status"] == "success"
+    assert result["app_id"] == app_id
+    assert result["title"] == "Test App"
+    assert "sql_with_lines" in result["queries"]["q1"]

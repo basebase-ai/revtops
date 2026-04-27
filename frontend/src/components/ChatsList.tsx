@@ -35,6 +35,13 @@ function apiConvToChatSummary(conv: ConversationSummary): ChatSummary {
     })),
     matchSnippet: conv.match_snippet,
     matchCount: conv.match_count ?? 0,
+    workspaceId: conv.workspace_id,
+    source: conv.source,
+    sourceChannelId: conv.source_channel_id,
+    normalizedChannelId: conv.normalized_channel_id,
+    resolvedChannelName: conv.resolved_channel_name,
+    groupBucketType: conv.group_bucket_type,
+    groupBucketKey: conv.group_bucket_key,
   };
 }
 
@@ -67,6 +74,7 @@ export function ChatsList({ chats: sidebarChats, onSelectChat, onNewChat }: Chat
   const [hasMore, setHasMore] = useState<boolean>(true);
   const [initialLoaded, setInitialLoaded] = useState<boolean>(false);
   const offsetRef = useRef<number>(0);
+  const cursorRef = useRef<string | null>(null);
   const sentinelRef = useRef<HTMLDivElement | null>(null);
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
 
@@ -101,12 +109,13 @@ export function ChatsList({ chats: sidebarChats, onSelectChat, onNewChat }: Chat
     if (reset) {
       setAllChats([]); // Clear immediately so stale results don't linger
       offsetRef.current = 0;
+      cursorRef.current = null;
     }
     const version = ++searchVersionRef.current;
     const offset = reset ? 0 : offsetRef.current;
     const apiScope = scopeFilter === 'all' ? undefined : scopeFilter;
     try {
-      const { data, error } = await listConversations(PAGE_SIZE, offset, apiScope, committedSearch);
+      const { data, error } = await listConversations(PAGE_SIZE, offset, apiScope, committedSearch, cursorRef.current);
       // Discard response if a newer search has started
       if (version !== searchVersionRef.current) return;
       if (error || !data) {
@@ -125,7 +134,8 @@ export function ChatsList({ chats: sidebarChats, onSelectChat, onNewChat }: Chat
         });
         offsetRef.current = offset + mapped.length;
       }
-      setHasMore(mapped.length >= PAGE_SIZE);
+      cursorRef.current = data.next_cursor ?? null;
+      setHasMore(Boolean(data.has_more));
     } finally {
       setIsLoadingMore(false);
       setInitialLoaded(true);
@@ -190,12 +200,46 @@ export function ChatsList({ chats: sidebarChats, onSelectChat, onNewChat }: Chat
   }, [mergedChats, scopeFilter, currentUserId, isSearching]);
 
   // Pinned first
-  const orderedChats = useMemo((): ChatSummary[] => {
-    if (pinnedChatIds.length === 0) return filteredChats;
+  const groupedChats = useMemo(() => {
     const pinnedSet = new Set(pinnedChatIds);
-    const pinned = filteredChats.filter((c) => pinnedSet.has(c.id));
-    const unpinned = filteredChats.filter((c) => !pinnedSet.has(c.id));
-    return [...pinned, ...unpinned];
+    const direct: ChatSummary[] = [];
+    const uncategorized: ChatSummary[] = [];
+    const channels = new Map<string, { label: string; chats: ChatSummary[]; newestTs: number }>();
+    const pinned: ChatSummary[] = [];
+
+    for (const chat of filteredChats) {
+      const ts = chat.lastMessageAt.getTime();
+      if (pinnedSet.has(chat.id)) {
+        pinned.push(chat);
+      }
+      const bucket = chat.groupBucketType ?? 'uncategorized';
+      if (bucket === 'direct') {
+        direct.push(chat);
+        continue;
+      }
+      if (bucket === 'channel' && chat.groupBucketKey) {
+        const current = channels.get(chat.groupBucketKey) ?? {
+          label: chat.resolvedChannelName ?? chat.normalizedChannelId ?? 'Unknown channel',
+          chats: [],
+          newestTs: 0,
+        };
+        current.chats.push(chat);
+        current.newestTs = Math.max(current.newestTs, ts);
+        channels.set(chat.groupBucketKey, current);
+        continue;
+      }
+      uncategorized.push(chat);
+    }
+
+    const byNewest = (a: ChatSummary, b: ChatSummary): number => b.lastMessageAt.getTime() - a.lastMessageAt.getTime();
+    pinned.sort(byNewest);
+    direct.sort(byNewest);
+    uncategorized.sort(byNewest);
+    const sortedChannels = Array.from(channels.entries())
+      .map(([key, value]) => ({ key, ...value, chats: value.chats.sort(byNewest) }))
+      .sort((a, b) => b.newestTs - a.newestTs);
+
+    return { pinned, direct, sortedChannels, uncategorized };
   }, [filteredChats, pinnedChatIds]);
 
   const handleSearchValueChange = useCallback(
@@ -288,7 +332,7 @@ export function ChatsList({ chats: sidebarChats, onSelectChat, onNewChat }: Chat
                 </div>
               ))}
             </div>
-          ) : orderedChats.length === 0 ? (
+          ) : (groupedChats.pinned.length + groupedChats.direct.length + groupedChats.uncategorized.length + groupedChats.sortedChannels.reduce((acc, section) => acc + section.chats.length, 0)) === 0 ? (
             <div className="text-center py-16">
               {searchQuery ? (
                 <>
@@ -315,16 +359,25 @@ export function ChatsList({ chats: sidebarChats, onSelectChat, onNewChat }: Chat
             </div>
           ) : (
             <div className="space-y-2">
-              {orderedChats.map((chat) => (
-                <ChatRow
-                  key={chat.id}
-                  chat={chat}
-                  searchTerm={committedSearch}
-                  hasActiveTask={chat.id in activeTasksByConversation}
-                  isPinned={pinnedChatIds.includes(chat.id)}
-                  onSelect={onSelectChat}
-                  onTogglePin={togglePinChat}
-                />
+              {groupedChats.pinned.length > 0 && <Section title="Pinned" />}
+              {groupedChats.pinned.map((chat) => (
+                <ChatRow key={`pinned-${chat.id}`} chat={chat} searchTerm={committedSearch} hasActiveTask={chat.id in activeTasksByConversation} isPinned onSelect={onSelectChat} onTogglePin={togglePinChat} />
+              ))}
+              {groupedChats.direct.length > 0 && <Section title="Direct" />}
+              {groupedChats.direct.map((chat) => (
+                <ChatRow key={chat.id} chat={chat} searchTerm={committedSearch} hasActiveTask={chat.id in activeTasksByConversation} isPinned={pinnedChatIds.includes(chat.id)} onSelect={onSelectChat} onTogglePin={togglePinChat} />
+              ))}
+              {groupedChats.sortedChannels.map((section) => (
+                <div key={section.key}>
+                  <Section title={section.label} />
+                  {section.chats.map((chat) => (
+                    <ChatRow key={chat.id} chat={chat} searchTerm={committedSearch} hasActiveTask={chat.id in activeTasksByConversation} isPinned={pinnedChatIds.includes(chat.id)} onSelect={onSelectChat} onTogglePin={togglePinChat} />
+                  ))}
+                </div>
+              ))}
+              {groupedChats.uncategorized.length > 0 && <Section title="Uncategorized" />}
+              {groupedChats.uncategorized.map((chat) => (
+                <ChatRow key={chat.id} chat={chat} searchTerm={committedSearch} hasActiveTask={chat.id in activeTasksByConversation} isPinned={pinnedChatIds.includes(chat.id)} onSelect={onSelectChat} onTogglePin={togglePinChat} />
               ))}
 
               {/* Infinite scroll sentinel */}
@@ -333,6 +386,11 @@ export function ChatsList({ chats: sidebarChats, onSelectChat, onNewChat }: Chat
               {isLoadingMore && (
                 <div className="flex justify-center py-4">
                   <div className="w-6 h-6 border-2 border-primary-500 border-t-transparent rounded-full animate-spin" />
+                </div>
+              )}
+              {!hasMore && initialLoaded && (
+                <div className="text-center text-xs text-surface-500 py-2">
+                  All conversations loaded
                 </div>
               )}
             </div>
@@ -458,6 +516,14 @@ function ChatRow({
         </div>
       </div>
     </button>
+  );
+}
+
+function Section({ title }: { title: string }): JSX.Element {
+  return (
+    <div className="pt-2 pb-1 px-1">
+      <h2 className="text-[11px] uppercase tracking-wider text-surface-500 font-semibold">{title}</h2>
+    </div>
   );
 }
 

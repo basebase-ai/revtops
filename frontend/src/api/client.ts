@@ -45,7 +45,7 @@ export interface ChatMessage {
 
 export interface ConversationSummary {
   id: string;
-  user_id: string;
+  user_id: string | null;
   title: string | null;
   summary: string | null;
   created_at: string;
@@ -56,12 +56,22 @@ export interface ConversationSummary {
   participants?: Array<{ id: string; name: string | null; email: string; avatar_url?: string | null }>;
   match_snippet?: string | null;
   match_count?: number;
+  workspace_id?: string | null;
+  source?: string | null;
+  source_channel_id?: string | null;
+  normalized_channel_id?: string | null;
+  resolved_channel_name?: string | null;
+  group_bucket_type?: "pinned" | "direct" | "channel" | "uncategorized";
+  group_bucket_key?: string;
 }
 
 export interface ConversationListResponse {
   conversations: ConversationSummary[];
   total: number;
   search_term?: string | null;
+  next_cursor?: string | null;
+  has_more?: boolean;
+  server_time?: string;
 }
 
 export interface ConversationDetailResponse {
@@ -86,6 +96,16 @@ export interface ConversationDetailResponse {
 
 export interface ChatHistoryResponse {
   messages: ChatMessage[];
+}
+
+export interface ChannelMemoryPayload {
+  id: string;
+  entity_type: string;
+  category: string | null;
+  content: string;
+  created_by_user_id: string | null;
+  created_at: string | null;
+  updated_at: string | null;
 }
 
 // =============================================================================
@@ -145,8 +165,14 @@ export async function listConversations(
   offset = 0,
   scope?: 'shared' | 'private' | 'mine',
   search?: string,
+  cursor?: string | null,
 ): Promise<ApiResponse<ConversationListResponse>> {
-  const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (cursor?.trim()) {
+    params.set('cursor', cursor.trim());
+  } else {
+    params.set('offset', String(offset));
+  }
   if (scope === 'shared' || scope === 'private') {
     params.set('scope', scope);
   }
@@ -197,6 +223,45 @@ export async function createConversation(
     method: "POST",
     body: JSON.stringify({ title }),
   });
+}
+
+export async function getChannelPersonalityMemory(
+  organizationId: string,
+  source: string,
+  channelId: string,
+): Promise<ApiResponse<ChannelMemoryPayload | null>> {
+  const params = new URLSearchParams({ source, channel_id: channelId });
+  return apiRequest<ChannelMemoryPayload | null>(
+    `/memories/${organizationId}/channel?${params.toString()}`,
+  );
+}
+
+export async function upsertChannelPersonalityMemory(
+  organizationId: string,
+  source: string,
+  channelId: string,
+  content: string,
+): Promise<ApiResponse<ChannelMemoryPayload>> {
+  const params = new URLSearchParams({ source, channel_id: channelId });
+  return apiRequest<ChannelMemoryPayload>(
+    `/memories/${organizationId}/channel?${params.toString()}`,
+    {
+      method: "PUT",
+      body: JSON.stringify({ content }),
+    },
+  );
+}
+
+export async function deleteChannelPersonalityMemory(
+  organizationId: string,
+  source: string,
+  channelId: string,
+): Promise<ApiResponse<{ status: string; memory_id: string }>> {
+  const params = new URLSearchParams({ source, channel_id: channelId });
+  return apiRequest<{ status: string; memory_id: string }>(
+    `/memories/${organizationId}/channel?${params.toString()}`,
+    { method: "DELETE" },
+  );
 }
 
 /**

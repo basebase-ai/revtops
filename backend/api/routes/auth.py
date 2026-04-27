@@ -1620,7 +1620,7 @@ async def link_identity(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid ID format")
 
-    async with get_session() as session:
+    async with get_session(organization_id=str(org_uuid)) as session:
         # Verify target user belongs to this org (membership or guest home org)
         target_user: User | None = await session.get(User, target_uuid)
         if not target_user:
@@ -1706,6 +1706,53 @@ async def link_identity(
 
         await session.commit()
 
+    # For Slack identities, also create a messenger_user_mappings record so the
+    # bot's real-time resolver can find the user on subsequent messages.
+    if mapping.source == "slack" and mapping.external_userid:
+        try:
+            from models.messenger_user_mapping import MessengerUserMapping
+            from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+            workspace_id: str | None = None
+            async with get_admin_session() as admin_session:
+                integration_result = await admin_session.execute(
+                    select(Integration)
+                    .where(Integration.organization_id == org_uuid)
+                    .where(Integration.connector == "slack")
+                    .where(Integration.is_active == True)  # noqa: E712
+                    .limit(1)
+                )
+                slack_integration: Integration | None = integration_result.scalar_one_or_none()
+                if slack_integration and slack_integration.extra_data:
+                    workspace_id = (
+                        slack_integration.extra_data.get("team_id")
+                        or slack_integration.extra_data.get("workspace_id")
+                    )
+
+                stmt = pg_insert(MessengerUserMapping).values(
+                    platform="slack",
+                    workspace_id=workspace_id,
+                    external_user_id=mapping.external_userid,
+                    user_id=target_uuid,
+                    organization_id=org_uuid,
+                    external_email=mapping.external_email,
+                    match_source="admin_manual_link",
+                ).on_conflict_do_nothing(
+                    constraint="uq_messenger_user_mappings_platform_ws_extid",
+                )
+                await admin_session.execute(stmt)
+                await admin_session.commit()
+            logger.info(
+                "Created messenger_user_mapping for linked Slack identity org=%s user=%s ext=%s",
+                org_uuid, target_uuid, mapping.external_userid,
+            )
+        except Exception:
+            logger.warning(
+                "Failed to create messenger_user_mapping for linked Slack identity org=%s user=%s ext=%s",
+                org_uuid, target_uuid, mapping.external_userid,
+                exc_info=True,
+            )
+
     return {"status": "linked"}
 
 
@@ -1733,7 +1780,7 @@ async def unlink_identity(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid ID format")
 
-    async with get_session() as session:
+    async with get_session(organization_id=str(org_uuid)) as session:
         requester: User | None = await session.get(User, requester_uuid)
         if not requester or await _get_org_membership(session, requester_uuid, org_uuid) is None:
             raise HTTPException(status_code=403, detail="Not authorized to modify this organization")
@@ -2619,13 +2666,13 @@ async def delete_organization(
             "deals",
             "goals",
             "pipelines",
-            "integrations",
             "github_pull_requests",
             "github_commits",
             "github_repositories",
             "tracker_issues",
             "tracker_projects",
             "tracker_teams",
+            "integrations",
             "meetings",
             "workflow_runs",
             "workflows",
@@ -2691,7 +2738,7 @@ async def update_guest_user(
     if not user_uuid:
         raise HTTPException(status_code=401, detail="Not authenticated")
 
-    async with get_session() as session:
+    async with get_session(organization_id=org_id) as session:
         requesting_user = await session.get(User, user_uuid)
         if not await _can_administer_org(session, requesting_user, org_uuid):
             raise HTTPException(status_code=403, detail="Org admin or global_admin required for this organization")
@@ -3033,6 +3080,20 @@ async def confirm_integration(
                 else:
                     logger.warning(
                         "[Confirm] Could not extract Slack team_id from Nango connection for connection_id=%s",
+                        nango_connection_id,
+                    )
+            # Carry authed_user from the raw OAuth response into metadata so
+            # upsert_slack_user_mappings_from_metadata can auto-map the
+            # installer's Slack identity to their Basebase account.
+            if "authed_user" not in connection_metadata:
+                _authed_raw: dict[str, Any] = (
+                    (connection.get("credentials") or {}).get("raw") or {}
+                ).get("authed_user") or {}
+                if isinstance(_authed_raw, dict) and _authed_raw.get("id"):
+                    connection_metadata["authed_user"] = _authed_raw
+                    logger.info(
+                        "[Confirm] Extracted Slack authed_user.id=%s from credentials.raw for connection_id=%s",
+                        _authed_raw["id"],
                         nango_connection_id,
                     )
         # Prevent an org from connecting two different Slack workspaces.
@@ -3709,6 +3770,8 @@ async def slack_oauth_callback(request: Request) -> RedirectResponse:
     team_info: dict[str, Any] = token_data.get("team", {})
     team_id: str = str(team_info.get("id", "")).strip()
     team_name: str = str(team_info.get("name", "")).strip()
+    authed_user_info: dict[str, Any] = token_data.get("authed_user") or {}
+    authed_user_id: str = str(authed_user_info.get("id") or "").strip()
 
     if access_token and team_id:
         from services.slack_bot_install import upsert_bot_install
@@ -3720,8 +3783,8 @@ async def slack_oauth_callback(request: Request) -> RedirectResponse:
                 access_token=access_token,
             )
             logger.info(
-                "[slack_direct_install] Stored bot token for team_id=%s team_name=%s (pending org link)",
-                team_id, team_name,
+                "[slack_direct_install] Stored bot token for team_id=%s team_name=%s authed_user=%s (pending org link)",
+                team_id, team_name, authed_user_id,
             )
         except Exception as exc:
             logger.error(
@@ -3729,8 +3792,11 @@ async def slack_oauth_callback(request: Request) -> RedirectResponse:
                 team_id, exc,
             )
 
+    redirect_params: str = f"slack_install=success&team_id={team_id}&team_name={team_name}"
+    if authed_user_id:
+        redirect_params += f"&authed_user_id={authed_user_id}"
     return RedirectResponse(
-        url=f"{frontend_url}/?slack_install=success&team_id={team_id}&team_name={team_name}",
+        url=f"{frontend_url}/?{redirect_params}",
         status_code=302,
     )
 

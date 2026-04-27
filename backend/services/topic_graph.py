@@ -1,0 +1,571 @@
+from __future__ import annotations
+
+import logging
+import math
+import re
+from collections import Counter, defaultdict
+from itertools import combinations
+from dataclasses import dataclass
+from datetime import date, datetime, time, timedelta, timezone
+from typing import Any
+from uuid import UUID
+
+from sqlalchemy import Select, and_, delete, func, select, text
+from sqlalchemy.dialects.postgresql import insert
+
+from config import settings
+from models.account import Account
+from models.activity import Activity
+from models.chat_message import ChatMessage
+from models.contact import Contact
+from models.conversation import Conversation
+from models.database import get_admin_session
+from models.organization import Organization
+from models.topic_graph_snapshot import TopicGraphSnapshot
+from services.common_english_words import COMMON_ENGLISH_WORDS
+
+logger = logging.getLogger(__name__)
+
+PARTIAL_WARNING = "Partial data: some sources failed"
+_TOKEN_RE = re.compile(r"\b[A-Za-z][A-Za-z0-9_\-]{2,}\b")
+_STOP = {"the", "and", "for", "with", "this", "that", "from", "you", "your", "are", "was"}
+_MIN_NODE_MENTIONS = 2
+_NGRAM_MIN = 2
+_NGRAM_MAX = 3
+
+_SOURCE_FRIENDLY_NAMES: dict[str, str] = {
+    "slack": "Slack",
+    "salesforce": "Salesforce",
+    "hubspot": "HubSpot",
+    "apollo": "Apollo",
+    "linear": "Linear",
+    "github": "GitHub",
+    "jira": "Jira",
+    "gmail": "Gmail",
+    "google_drive": "Google Drive",
+    "google_calendar": "Google Calendar",
+    "microsoft_mail": "Microsoft Mail",
+    "microsoft_calendar": "Microsoft Calendar",
+    "zoom": "Zoom",
+    "asana": "Asana",
+    "teams": "Microsoft Teams",
+}
+
+
+def _connector_friendly_name(source: str) -> str:
+    return _SOURCE_FRIENDLY_NAMES.get(source.lower(), source.replace("_", " ").title())
+
+
+@dataclass
+class CandidateDoc:
+    source: str
+    source_ref: str
+    text: str
+    event_time: datetime
+    ingestion_time: datetime
+
+
+def _utc_bounds(graph_date: date) -> tuple[datetime, datetime]:
+    start = datetime.combine(graph_date, time.min).replace(tzinfo=timezone.utc)
+    end = start + timedelta(days=1)
+    return start, end
+
+
+def _normalize_dt(dt: datetime | None) -> datetime | None:
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def select_watermark_time(source_event_time: datetime | None, ingestion_event_time: datetime | None) -> datetime | None:
+    source_dt = _normalize_dt(source_event_time)
+    ingestion_dt = _normalize_dt(ingestion_event_time)
+    return source_dt or ingestion_dt
+
+
+def _tokenize(text: str) -> list[str]:
+    out: list[str] = []
+    for m in _TOKEN_RE.finditer(text):
+        token = m.group(0).lower()
+        if token in _STOP or token in COMMON_ENGLISH_WORDS:
+            continue
+        out.append(token)
+    return out
+
+
+def _extract_candidate_nodes(text: str) -> list[str]:
+    tokens = _tokenize(text)
+    if not tokens:
+        return []
+    out: list[str] = list(tokens)
+    for n in range(_NGRAM_MIN, _NGRAM_MAX + 1):
+        for i in range(0, max(len(tokens) - n + 1, 0)):
+            phrase = " ".join(tokens[i : i + n]).strip()
+            if phrase:
+                out.append(phrase)
+    return out
+
+
+def _similarity(a: str, b: str) -> float:
+    aset, bset = set(a.split()), set(b.split())
+    if not aset or not bset:
+        return 0.0
+    return len(aset & bset) / len(aset | bset)
+
+
+def _canonicalize(raw_nodes: list[str], min_conf: float) -> dict[str, str]:
+    ordered = sorted(set(n.strip() for n in raw_nodes if n.strip()))
+    canonical: list[str] = []
+    mapping: dict[str, str] = {}
+    for node in ordered:
+        chosen = node
+        best = 0.0
+        for c in canonical:
+            score = _similarity(node.lower(), c.lower())
+            if score > best:
+                best = score
+                chosen = c
+        if best >= min_conf:
+            mapping[node] = chosen
+        else:
+            canonical.append(node)
+            mapping[node] = node
+    return mapping
+
+
+async def _collect_activity_docs(org_id: str, graph_date: date) -> list[CandidateDoc]:
+    start, end = _utc_bounds(graph_date)
+    async with get_admin_session() as session:
+        rows = (
+            await session.execute(
+                select(
+                    Activity.id,
+                    Activity.source_system,
+                    Activity.subject,
+                    Activity.description,
+                    Activity.activity_date,
+                    Activity.synced_at,
+                    Activity.updated_at,
+                ).where(Activity.organization_id == UUID(org_id))
+            )
+        ).all()
+
+    docs: list[CandidateDoc] = []
+    for r in rows:
+        source_time = _normalize_dt(r.activity_date)
+        ingestion_time = _normalize_dt(r.synced_at) or _normalize_dt(r.updated_at)
+        if ingestion_time is None:
+            continue
+        watermark = select_watermark_time(source_time, ingestion_time)
+        if not (start <= watermark < end):
+            continue
+        text_blob = "\n".join(x for x in [r.subject or "", r.description or ""] if x).strip()
+        if not text_blob:
+            continue
+        docs.append(
+            CandidateDoc(
+                source=r.source_system or "activity",
+                source_ref=f"activity:{r.id}",
+                text=text_blob,
+                event_time=source_time or ingestion_time,
+                ingestion_time=ingestion_time,
+            )
+        )
+    return docs
+
+
+async def _collect_slack_docs(org_id: str, graph_date: date) -> tuple[list[CandidateDoc], list[str]]:
+    start, end = _utc_bounds(graph_date)
+    async with get_admin_session() as session:
+        rows = (
+            await session.execute(
+                select(
+                    ChatMessage.id,
+                    ChatMessage.content,
+                    ChatMessage.content_blocks,
+                    ChatMessage.created_at,
+                    Conversation.source_channel_id,
+                    Conversation.title,
+                )
+                .join(Conversation, Conversation.id == ChatMessage.conversation_id)
+                .where(
+                    ChatMessage.organization_id == UUID(org_id),
+                    Conversation.source == "slack",
+                )
+            )
+        ).all()
+    docs: list[CandidateDoc] = []
+    channels: list[str] = []
+    for r in rows:
+        created_at = _normalize_dt(r.created_at)
+        if created_at is None or not (start <= created_at < end):
+            continue
+        parts: list[str] = []
+        if isinstance(r.content_blocks, list):
+            for b in r.content_blocks:
+                if isinstance(b, dict) and b.get("type") == "text" and isinstance(b.get("text"), str):
+                    parts.append(b["text"])
+        if r.content:
+            parts.append(r.content)
+        text_blob = "\n".join(x for x in parts if x).strip()
+        if text_blob:
+            docs.append(
+                CandidateDoc(
+                    source="slack",
+                    source_ref=f"chat_message:{r.id}",
+                    text=text_blob,
+                    event_time=created_at,
+                    ingestion_time=created_at,
+                )
+            )
+        channel_name = (r.title or "").strip()
+        if channel_name.startswith("#"):
+            channel_name = channel_name[1:]
+        if channel_name:
+            channels.append(channel_name)
+        elif r.source_channel_id:
+            channels.append(str(r.source_channel_id))
+    return docs, channels
+
+
+async def _seed_crm_nodes(org_id: str) -> tuple[list[str], list[str]]:
+    async with get_admin_session() as session:
+        contacts = (await session.execute(select(Contact.name).where(Contact.organization_id == UUID(org_id)))).all()
+        accounts = (await session.execute(select(Account.name).where(Account.organization_id == UUID(org_id)))).all()
+    return [c[0] for c in contacts if c[0]], [a[0] for a in accounts if a[0]]
+
+
+def _heat(unique_doc_count: int, newest_at: datetime) -> float:
+    uniq_w = settings.TOPIC_GRAPH_HEAT_UNIQUE_DOC_WEIGHT
+    rec_w = settings.TOPIC_GRAPH_HEAT_RECENCY_WEIGHT
+    half_life = max(float(settings.TOPIC_GRAPH_HEAT_RECENCY_HALF_LIFE_HOURS), 1.0)
+    age_h = max((datetime.now(timezone.utc) - newest_at).total_seconds() / 3600.0, 0.0)
+    recency = math.exp(-math.log(2) * age_h / half_life)
+    return uniq_w * unique_doc_count + rec_w * recency
+
+
+async def generate_topic_graph_for_org_day(org_id: str, graph_date: date) -> dict[str, Any]:
+    logger.info("topic_graph.stage=ingest org_id=%s graph_date=%s", org_id, graph_date.isoformat())
+    warnings: list[str] = []
+    coverage: dict[str, Any] = {"sources": {}, "partial": False}
+    docs: list[CandidateDoc] = []
+    slack_channels: list[str] = []
+
+    for source_name, fn in (("activities", _collect_activity_docs),):
+        try:
+            sd = await fn(org_id, graph_date)
+            docs.extend(sd)
+            coverage["sources"][source_name] = {"docs": len(sd), "status": "ok"}
+        except Exception as exc:
+            logger.exception("topic_graph.stage=ingest_failed source=%s org_id=%s", source_name, org_id)
+            warnings.append(f"{source_name}:{exc}")
+            coverage["sources"][source_name] = {"docs": 0, "status": "failed"}
+
+    try:
+        slack_docs, slack_channels = await _collect_slack_docs(org_id, graph_date)
+        docs.extend(slack_docs)
+        coverage["sources"]["slack"] = {"docs": len(slack_docs), "status": "ok"}
+    except Exception as exc:
+        warnings.append(f"slack:{exc}")
+        coverage["sources"]["slack"] = {"docs": 0, "status": "failed"}
+
+    try:
+        crm_people, crm_companies = await _seed_crm_nodes(org_id)
+        coverage["sources"]["crm"] = {"people": len(crm_people), "companies": len(crm_companies), "status": "ok"}
+    except Exception as exc:
+        warnings.append(f"crm:{exc}")
+        crm_people, crm_companies = [], []
+        coverage["sources"]["crm"] = {"people": 0, "companies": 0, "status": "failed"}
+
+    logger.info("topic_graph.stage=extract org_id=%s docs=%d", org_id, len(docs))
+    node_to_docs: dict[str, set[str]] = defaultdict(set)
+    node_newest: dict[str, datetime] = {}
+    node_oldest: dict[str, datetime] = {}
+    node_mentions: dict[str, int] = defaultdict(int)
+    node_sources: dict[str, set[str]] = defaultdict(set)
+    evidence: dict[str, list[dict[str, Any]]] = defaultdict(list)
+
+    extracted_nodes: list[str] = []
+    for doc in docs:
+        nodes = _extract_candidate_nodes(doc.text)
+        node_counts = Counter(nodes)
+        top_nodes = [node for node, _count in node_counts.most_common(25)]
+        for node in top_nodes:
+            extracted_nodes.append(node)
+            node_to_docs[node].add(doc.source_ref)
+            node_mentions[node] += int(node_counts.get(node, 1))
+            node_sources[node].add(doc.source)
+            node_newest[node] = max(node_newest.get(node, doc.event_time), doc.event_time)
+            prev_oldest = node_oldest.get(node)
+            if prev_oldest is None or doc.event_time < prev_oldest:
+                node_oldest[node] = doc.event_time
+            evidence[node].append(
+                {
+                    "ref": doc.source_ref,
+                    "source": doc.source,
+                    "source_display": _connector_friendly_name(doc.source),
+                    "event_time": doc.event_time.isoformat(),
+                    "snippet": doc.text[:400],
+                    "relevance": doc.text.lower().count(node.lower()),
+                }
+            )
+
+    raw_nodes = extracted_nodes + slack_channels + crm_people + crm_companies
+    canonical = _canonicalize(raw_nodes, float(settings.TOPIC_GRAPH_FUZZY_MERGE_MIN_CONFIDENCE))
+
+    merged_docs: dict[str, set[str]] = defaultdict(set)
+    merged_newest: dict[str, datetime] = {}
+    merged_mentions: dict[str, int] = defaultdict(int)
+    merged_sources: dict[str, set[str]] = defaultdict(set)
+    merged_evidence: dict[str, list[dict[str, Any]]] = defaultdict(list)
+
+    for node, refs in node_to_docs.items():
+        cnode = canonical.get(node, node)
+        merged_docs[cnode].update(refs)
+        newest = node_newest.get(node, datetime.now(timezone.utc))
+        merged_newest[cnode] = max(merged_newest.get(cnode, newest), newest)
+        merged_mentions[cnode] += node_mentions.get(node, 0)
+        merged_sources[cnode].update(node_sources.get(node, set()))
+        merged_evidence[cnode].extend(evidence.get(node, []))
+
+    for channel_name in slack_channels:
+        cnode = canonical.get(channel_name, channel_name)
+        merged_docs[cnode].add(f"slack_channel:{channel_name}")
+        merged_mentions[cnode] += 1
+        now = datetime.now(timezone.utc)
+        merged_newest.setdefault(cnode, now)
+
+    for seeded_node in crm_people + crm_companies:
+        cnode = canonical.get(seeded_node, seeded_node)
+        merged_docs.setdefault(cnode, set())
+        merged_mentions.setdefault(cnode, 0)
+        now = datetime.now(timezone.utc)
+        merged_newest.setdefault(cnode, now)
+
+    pruned_nodes = {
+        node
+        for node, mention_count in merged_mentions.items()
+        if int(mention_count) < _MIN_NODE_MENTIONS
+    }
+    for node in pruned_nodes:
+        merged_docs.pop(node, None)
+        merged_newest.pop(node, None)
+        merged_mentions.pop(node, None)
+        merged_sources.pop(node, None)
+        merged_evidence.pop(node, None)
+
+    edge_cooccurrence: dict[tuple[str, str], float] = defaultdict(float)
+    doc_to_nodes: dict[str, set[str]] = defaultdict(set)
+    for node, refs in merged_docs.items():
+        for ref in refs:
+            doc_to_nodes[ref].add(node)
+    node_doc_frequency: dict[str, int] = {node: len(refs) for node, refs in merged_docs.items()}
+    for nodeset in doc_to_nodes.values():
+        for a, b in combinations(sorted(nodeset), 2):
+            edge_cooccurrence[(a, b)] += 1.0
+
+    total_docs = max(len(doc_to_nodes), 1)
+    edge_weights: dict[tuple[str, str], float] = {}
+    for (a, b), cooc in edge_cooccurrence.items():
+        freq_a = max(node_doc_frequency.get(a, 1), 1)
+        freq_b = max(node_doc_frequency.get(b, 1), 1)
+        pmi = math.log((cooc * total_docs) / (freq_a * freq_b))
+        edge_weights[(a, b)] = round(max(0.0, pmi) * cooc, 6)
+
+    centrality: dict[str, int] = defaultdict(int)
+    for a, b in edge_weights:
+        centrality[a] += 1
+        centrality[b] += 1
+
+    baseline_mentions = await _load_recent_node_baseline(org_id, graph_date)
+    node_list = sorted(merged_docs.keys())
+    nodes: list[dict[str, Any]] = []
+    for node in node_list:
+        oldest_source = "Unknown"
+        if merged_evidence.get(node):
+            oldest_row = min(merged_evidence[node], key=lambda row: str(row.get("event_time", "")))
+            oldest_source = str(oldest_row.get("source_display") or oldest_row.get("source") or "Unknown")
+        elif any(str(ref).startswith("slack_channel:") for ref in merged_docs.get(node, set())):
+            oldest_source = "Slack"
+        mention_count = int(merged_mentions.get(node, 0))
+        source_diversity = len(merged_sources.get(node, set()))
+        baseline_avg = float(baseline_mentions.get(node, 0.0))
+        momentum = round(mention_count / max(baseline_avg, 1.0), 6)
+        nodes.append(
+            {
+                "id": node,
+                "label": node,
+                "type": "entity",
+                "heat": round(_heat(len(merged_docs[node]), merged_newest[node]), 6),
+                "unique_doc_count": len(merged_docs[node]),
+                "mention_count": mention_count,
+                "source": oldest_source,
+                "centrality": int(centrality.get(node, 0)),
+                "source_diversity": source_diversity,
+                "momentum": momentum,
+            }
+        )
+
+    edges = [{"source": a, "target": b, "weight": w} for (a, b), w in sorted(edge_weights.items())]
+
+    coverage["partial"] = any(v.get("status") == "failed" for v in coverage["sources"].values())
+    if coverage["partial"]:
+        coverage["warning_text"] = PARTIAL_WARNING
+
+    payload = {
+        "nodes": nodes,
+        "edges": edges,
+        "evidence_by_node": merged_evidence,
+    }
+    metadata = {
+        "coverage": coverage,
+        "warnings": warnings,
+        "status": "completed_partial" if coverage["partial"] else "completed",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "doc_count": len(docs),
+    }
+
+    await upsert_topic_graph_snapshot(org_id, graph_date, payload, metadata)
+    logger.info("topic_graph.stage=persist org_id=%s graph_date=%s nodes=%d edges=%d", org_id, graph_date.isoformat(), len(nodes), len(edges))
+    return {"status": metadata["status"], "nodes": len(nodes), "edges": len(edges)}
+
+
+async def upsert_topic_graph_snapshot(org_id: str, graph_date: date, graph_payload: dict[str, Any], run_metadata: dict[str, Any]) -> None:
+    lock_key = int(graph_date.strftime("%Y%m%d"))
+    async with get_admin_session() as session:
+        # deterministic lock ordering: org hash then date
+        await session.execute(text("SELECT pg_advisory_xact_lock(hashtext(:org_id), :lock_key)"), {"org_id": org_id, "lock_key": lock_key})
+        stmt = insert(TopicGraphSnapshot).values(
+            organization_id=UUID(org_id),
+            graph_date=graph_date,
+            graph_payload=graph_payload,
+            run_metadata=run_metadata,
+            status=run_metadata.get("status", "completed"),
+        )
+        stmt = stmt.on_conflict_do_update(
+            constraint="uq_topic_graph_org_date",
+            set_={
+                "graph_payload": stmt.excluded.graph_payload,
+                "run_metadata": stmt.excluded.run_metadata,
+                "status": stmt.excluded.status,
+                "updated_at": func.now(),
+            },
+        )
+        await session.execute(stmt)
+        await session.commit()
+
+
+async def get_topic_graph_snapshot(org_id: str, graph_date: date) -> TopicGraphSnapshot | None:
+    async with get_admin_session() as session:
+        row = await session.execute(
+            select(TopicGraphSnapshot).where(
+                TopicGraphSnapshot.organization_id == UUID(org_id),
+                TopicGraphSnapshot.graph_date == graph_date,
+            )
+        )
+        return row.scalar_one_or_none()
+
+
+async def list_topic_graph_snapshot_dates(org_id: str) -> list[date]:
+    async with get_admin_session() as session:
+        rows = await session.execute(
+            select(TopicGraphSnapshot.graph_date)
+            .where(TopicGraphSnapshot.organization_id == UUID(org_id))
+            .order_by(TopicGraphSnapshot.graph_date.desc())
+        )
+        return [r[0] for r in rows.all()]
+
+
+def _rank_evidence(evidence_rows: list[dict[str, Any]], node_id: str) -> list[dict[str, Any]]:
+    dedup: dict[str, dict[str, Any]] = {}
+    for row in evidence_rows:
+        key = str(row.get("ref"))
+        if key not in dedup:
+            dedup[key] = row
+    rows = list(dedup.values())
+    relevance_sorted = sorted(rows, key=lambda r: (-int(r.get("relevance", 0)), str(r.get("ref", ""))))[:5]
+    recent_sorted = sorted(rows, key=lambda r: (str(r.get("event_time", "")), str(r.get("ref", ""))), reverse=True)
+    out: list[dict[str, Any]] = []
+    used: set[str] = set()
+    source_budget: dict[str, int] = defaultdict(int)
+    for row in relevance_sorted + recent_sorted:
+        ref = str(row.get("ref", ""))
+        if ref in used:
+            continue
+        source = str(row.get("source", "")).strip().lower()
+        if source and source_budget[source] >= 2:
+            continue
+        used.add(ref)
+        if source:
+            source_budget[source] += 1
+        out.append(row)
+        if len(out) >= int(settings.TOPIC_GRAPH_SNIPPETS_PER_NODE):
+            break
+    return out
+
+
+async def _load_recent_node_baseline(org_id: str, graph_date: date, lookback_days: int = 7) -> dict[str, float]:
+    start = graph_date - timedelta(days=max(lookback_days, 1))
+    end = graph_date
+    async with get_admin_session() as session:
+        rows = (
+            await session.execute(
+                select(TopicGraphSnapshot.graph_payload).where(
+                    TopicGraphSnapshot.organization_id == UUID(org_id),
+                    and_(TopicGraphSnapshot.graph_date >= start, TopicGraphSnapshot.graph_date < end),
+                )
+            )
+        ).all()
+    accumulator: dict[str, list[int]] = defaultdict(list)
+    for row in rows:
+        payload = row[0]
+        if not isinstance(payload, dict):
+            continue
+        nodes = payload.get("nodes", [])
+        if not isinstance(nodes, list):
+            continue
+        for node in nodes:
+            if not isinstance(node, dict):
+                continue
+            node_id = str(node.get("id", "")).strip()
+            if not node_id:
+                continue
+            accumulator[node_id].append(int(node.get("mention_count", 0) or 0))
+    return {node_id: (sum(counts) / len(counts)) for node_id, counts in accumulator.items() if counts}
+
+
+async def get_node_evidence(org_id: str, graph_date: date, node_id: str) -> list[dict[str, Any]]:
+    snap = await get_topic_graph_snapshot(org_id, graph_date)
+    if snap is None:
+        return []
+    evidence_map = snap.graph_payload.get("evidence_by_node", {}) if isinstance(snap.graph_payload, dict) else {}
+    rows = evidence_map.get(node_id, []) if isinstance(evidence_map, dict) else []
+    if not isinstance(rows, list):
+        return []
+    return _rank_evidence([r for r in rows if isinstance(r, dict)], node_id)
+
+
+async def list_all_organization_ids() -> list[str]:
+    async with get_admin_session() as session:
+        rows = await session.execute(select(Organization.id))
+        return [str(r[0]) for r in rows.all()]
+
+
+async def cleanup_topic_graph_retention() -> int:
+    keep_days = int(settings.TOPIC_GRAPH_RETENTION_DAYS)
+    cutoff = datetime.now(timezone.utc).date() - timedelta(days=keep_days)
+    async with get_admin_session() as session:
+        res = await session.execute(delete(TopicGraphSnapshot).where(TopicGraphSnapshot.graph_date < cutoff))
+        await session.commit()
+        return int(res.rowcount or 0)
+
+
+def iter_date_range(start: date, end: date) -> list[date]:
+    out: list[date] = []
+    curr = start
+    while curr <= end:
+        out.append(curr)
+        curr = curr + timedelta(days=1)
+    return out

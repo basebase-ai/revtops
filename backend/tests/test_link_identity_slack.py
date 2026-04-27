@@ -94,7 +94,7 @@ def test_link_identity_links_related_slack_mappings(monkeypatch):
     )
 
     fake_session = _FakeSession(target_user, selected_mapping, [related_mapping])
-    monkeypatch.setattr(auth, "get_session", lambda: _FakeSessionContext(fake_session))
+    monkeypatch.setattr(auth, "get_session", lambda **kwargs: _FakeSessionContext(fake_session))
 
     result = asyncio.run(
         auth.link_identity(
@@ -139,7 +139,7 @@ def test_link_identity_non_slack_does_not_attempt_related_linking(monkeypatch):
     )
 
     fake_session = _FakeSession(target_user, selected_mapping, [])
-    monkeypatch.setattr(auth, "get_session", lambda: _FakeSessionContext(fake_session))
+    monkeypatch.setattr(auth, "get_session", lambda **kwargs: _FakeSessionContext(fake_session))
 
     result = asyncio.run(
         auth.link_identity(

@@ -81,10 +81,11 @@ class ArtifactConnector(BaseConnector):
                 ],
             ),
         ],
-        description="Create and update downloadable files. IMPORTANT: When the user asks to edit, revise, or update an artifact they're viewing or that was just created, use operation='update' with the artifact_id from the previous result — do NOT create a new artifact.",
+        description="Create and update downloadable files.",
         usage_guide=(
-            "When the user says 'update', 'edit', 'change', 'revise', or 'add to' regarding an artifact from this conversation, "
-            "use operation='update' with artifact_id from your prior create/update result. Creating a new artifact gives a new URL; updating keeps the same one."
+            "When the user says 'update', 'edit', 'change', 'revise', or 'add to' regarding an artifact from this conversation "
+            "(including one they are viewing or that was just created), use operation='update' with artifact_id from your prior "
+            "create/update result. Do NOT create a new artifact. Creating a new artifact gives a new URL; updating keeps the same one."
         ),
     )
 
@@ -278,6 +279,7 @@ class ArtifactConnector(BaseConnector):
         artifact_uuid: UUID = uuid4()
         artifact_id_str: str = str(artifact_uuid)
         user_uuid: UUID | None = None
+        visibility: str = "team"
         if message_id:
             try:
                 message_uuid = UUID(message_id)
@@ -327,20 +329,31 @@ class ArtifactConnector(BaseConnector):
                             Conversation.user_id,
                             Conversation.source,
                             Conversation.source_user_id,
+                            Conversation.scope,
                         ).where(
                             Conversation.id == conversation_uuid,
                         )
                     )
-                    conversation_record: tuple[UUID | None, str | None, str | None] | None = row.one_or_none()
+                    conversation_record: tuple[UUID | None, str | None, str | None, str | None] | None = row.one_or_none()
                     conversation_user_id: UUID | None = None
                     conversation_source: str | None = None
                     conversation_source_user_id: str | None = None
+                    conversation_scope: str | None = None
                     if conversation_record is not None:
                         (
                             conversation_user_id,
                             conversation_source,
                             conversation_source_user_id,
+                            conversation_scope,
                         ) = conversation_record
+                    normalized_scope: str = (conversation_scope or "").strip().lower()
+                    if normalized_scope == "private":
+                        visibility = "private"
+                        logger.info(
+                            "[ArtifactConnector] Inherited private visibility from conversation scope: conversation_id=%s scope=%s",
+                            conversation_id,
+                            conversation_scope,
+                        )
                     if conversation_user_id is not None:
                         user_uuid = conversation_user_id
                         logger.info(
@@ -371,6 +384,14 @@ class ArtifactConnector(BaseConnector):
             )
 
         if user_uuid is None:
+            if visibility == "private":
+                visibility = "team"
+                logger.warning(
+                    "[ArtifactConnector] Unable to keep private visibility without an owner; reverting to team visibility: org_id=%s message_id=%s conversation_id=%s",
+                    self.organization_id,
+                    message_id,
+                    conversation_id,
+                )
             logger.warning(
                 "[ArtifactConnector] Artifact owner unresolved; creating ownerless artifact: org_id=%s message_id=%s conversation_id=%s",
                 self.organization_id,
@@ -385,6 +406,7 @@ class ArtifactConnector(BaseConnector):
                 organization_id=UUID(self.organization_id),
                 type="file",
                 title=title,
+                visibility=visibility,
                 content=stored_content,
                 content_type=content_type,
                 mime_type=mime_type,

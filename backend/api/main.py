@@ -20,7 +20,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from api.websockets import websocket_endpoint
-from api.routes import action_ledger, admin_dashboard, apps, artifacts, auth, billing, change_sessions, chat, connectors, daily_digests, data, deals, drive, memories, notifications, public, search, slack_events, slack_user_mappings, support, sync, teams_events, tool_settings, twilio_events, whatsapp_events, waitlist, workstreams, workflows
+from api.routes import action_ledger, admin_dashboard, apps, artifacts, auth, billing, change_sessions, chat, connectors, daily_digests, data, deals, drive, memories, notifications, public, search, slack_events, slack_user_mappings, support, sync, teams_events, tool_settings, topic_graph, twilio_events, whatsapp_events, waitlist, workstreams, workflows
 from models.database import close_db, get_pool_status
 from services.task_manager import task_manager
 from config import log_missing_env_vars, settings
@@ -183,6 +183,7 @@ app.include_router(whatsapp_events.router, prefix="/api/whatsapp", tags=["whatsa
 app.include_router(teams_events.router, prefix="/api/teams", tags=["teams"])
 app.include_router(action_ledger.router, prefix="/api", tags=["action-ledger"])
 app.include_router(admin_dashboard.router, prefix="/api/admin-dashboard", tags=["admin-dashboard"])
+app.include_router(topic_graph.router, prefix="/api/admin-topic-graph", tags=["admin-topic-graph"])
 # Keep share router after /api routers so generic org-slug routes (e.g. /{org_slug}/artifacts/{id})
 # do not shadow concrete API endpoints like /api/artifacts/{id}.
 app.include_router(public.share_router, tags=["public"])

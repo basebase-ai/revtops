@@ -21,6 +21,10 @@ import { Avatar, type AvatarUser } from './Avatar';
 import { ScopeLockIcon } from './ScopeVisibilityIcons';
 import { APP_NAME, LOGO_PATH, RELEASE_STAGE } from '../lib/brand';
 
+const CHANNEL_PERSONALITY_MAX_LENGTH = 1000;
+const CHANNEL_PERSONALITY_TEXTAREA_BASE_HEIGHT_PX = 160;
+const CHANNEL_PERSONALITY_TEXTAREA_MAX_HEIGHT_PX = Math.round(CHANNEL_PERSONALITY_TEXTAREA_BASE_HEIGHT_PX * 1.5);
+
 /** Help button and modal for support requests. */
 function HelpButton(): JSX.Element {
   const [showModal, setShowModal] = useState(false);
@@ -630,6 +634,15 @@ const GLOBAL_ADMIN_NAV_ITEMS: ReadonlyArray<{
       </svg>
     ),
   },
+  {
+    id: 'graph-magic',
+    label: "Graph Magic",
+    icon: (
+      <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden>
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 19l6-6 4 4 6-10" />
+      </svg>
+    ),
+  },
 ];
 
 export function Sidebar({
@@ -898,6 +911,19 @@ function formatRelativeTime(date: Date): string {
   return date.toLocaleDateString();
 }
 
+interface ChannelMemoryResponse {
+  id: string;
+  content: string;
+}
+
+function normalizeChannelIdForMemory(source: string | null | undefined, channelKey: string, normalizedChannelId?: string | null): string {
+  const raw = (normalizedChannelId ?? '').trim() || channelKey.replace(/^channel:/, '').trim();
+  if ((source ?? '').toLowerCase() === 'slack') {
+    return raw.split(':', 1)[0] ?? raw;
+  }
+  return raw;
+}
+
 /** Recent chats: shared + private in one list (recency), pinned first; lock marks private. Row actions live in the chat ⋮ menu. */
 function ChatAccordion({
   collapsed,
@@ -915,35 +941,124 @@ function ChatAccordion({
   onViewAll: () => void;
 }): JSX.Element | null {
   const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [collapsedSections, setCollapsedSections] = useState<Record<string, boolean>>({});
+  const [channelPersonalityTarget, setChannelPersonalityTarget] = useState<{
+    key: string;
+    label: string;
+    source: string | null;
+    normalizedChannelId: string;
+  } | null>(null);
   const prefetchConversation = useAppStore((s) => s.prefetchConversation);
   const pinnedChatIds = useAppStore((s) => s.pinnedChatIds);
+  const organizationId = useAppStore((s) => s.organization?.id ?? null);
   const unreadConversationIds = useChatStore((s) => s.unreadConversationIds);
 
   useEffect(() => {
     return () => { if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current); };
   }, []);
 
-  const recentSidebarChats = useMemo(() => {
+  const groupedSidebarChats = useMemo(() => {
     const pinnedSet = new Set(pinnedChatIds);
     const sorted = [...orderedChats].sort(
       (a, b) => b.lastMessageAt.getTime() - a.lastMessageAt.getTime(),
     );
-    const pinned = sorted.filter((c) => pinnedSet.has(c.id));
-    const unpinned = sorted.filter((c) => !pinnedSet.has(c.id));
-    const merged = [...pinned, ...unpinned];
-    const limit = 15;
-    return merged.slice(0, limit);
+    const direct: ChatSummary[] = [];
+    const uncategorized: ChatSummary[] = [];
+    const channels = new Map<string, {
+      label: string;
+      source: string | null;
+      normalizedChannelId: string | null;
+      chats: ChatSummary[];
+      newestTs: number;
+    }>();
+    const pinned: ChatSummary[] = [];
+    for (const chat of sorted) {
+      const ts = chat.lastMessageAt.getTime();
+      if (pinnedSet.has(chat.id)) pinned.push(chat);
+      const bucket = chat.groupBucketType ?? 'uncategorized';
+      if (bucket === 'direct') {
+        direct.push(chat);
+        continue;
+      }
+      if (bucket === 'channel' && chat.groupBucketKey) {
+        const current = channels.get(chat.groupBucketKey) ?? {
+          label: chat.resolvedChannelName ?? chat.normalizedChannelId ?? 'Channel',
+          source: chat.source ?? null,
+          normalizedChannelId: chat.normalizedChannelId ?? null,
+          chats: [],
+          newestTs: 0,
+        };
+        current.chats.push(chat);
+        current.newestTs = Math.max(current.newestTs, ts);
+        channels.set(chat.groupBucketKey, current);
+        continue;
+      }
+      uncategorized.push(chat);
+    }
+    const globalLimit = 50;
+    const byNewest = (a: ChatSummary, b: ChatSummary): number => b.lastMessageAt.getTime() - a.lastMessageAt.getTime();
+    const channelSections = Array.from(channels.entries())
+      .map(([key, value]) => ({
+        key,
+        label: value.label,
+        source: value.source,
+        normalizedChannelId: value.normalizedChannelId,
+        chats: value.chats.sort(byNewest),
+        newestTs: value.newestTs,
+      }))
+      .sort((a, b) => b.newestTs - a.newestTs);
+    const flattenCount =
+      pinned.length +
+      direct.length +
+      uncategorized.length +
+      channelSections.reduce((acc, c) => acc + c.chats.length, 0);
+    let remaining = globalLimit;
+    const take = (items: ChatSummary[]): ChatSummary[] => {
+      if (remaining <= 0) return [];
+      const selected = items.slice(0, remaining);
+      remaining -= selected.length;
+      return selected;
+    };
+    const limitedPinned = take(pinned.sort(byNewest));
+    const limitedDirect = take(direct.sort(byNewest));
+    const limitedChannels = channelSections
+      .map((section) => ({ ...section, chats: take(section.chats) }))
+      .filter((section) => section.chats.length > 0);
+    const limitedUncategorized = take(uncategorized.sort(byNewest));
+    return {
+      pinned: limitedPinned,
+      direct: limitedDirect,
+      uncategorized: limitedUncategorized,
+      channels: limitedChannels,
+      flattenCount,
+    };
   }, [orderedChats, pinnedChatIds]);
 
   if (collapsed) return null;
 
-  const renderChatItem = (chat: ChatSummary): JSX.Element => {
+  const isSectionCollapsed = (sectionKey: string): boolean => {
+    const explicit = collapsedSections[sectionKey];
+    if (typeof explicit === 'boolean') return explicit;
+    return sectionKey !== 'direct';
+  };
+
+  const toggleSection = (sectionKey: string): void => {
+    setCollapsedSections((prev) => ({
+      ...prev,
+      [sectionKey]:
+        typeof prev[sectionKey] === 'boolean'
+          ? !prev[sectionKey]
+          : sectionKey === 'direct',
+    }));
+  };
+
+  const renderChatItem = (chat: ChatSummary, itemKey: string): JSX.Element => {
     const hasActiveTask = chat.id in activeTasksByConversation;
     const isUnread = unreadConversationIds.has(chat.id);
 
     return (
       <div
-        key={chat.id}
+        key={itemKey}
         className={`relative w-full text-left px-2 py-1 rounded-md transition-colors cursor-pointer leading-tight ${
           currentChatId === chat.id
             ? 'bg-surface-800 text-surface-100'
@@ -1034,14 +1149,291 @@ function ChatAccordion({
       </button>
 
       <div className="flex-1 overflow-y-auto scrollbar-thin space-y-0 min-h-0">
-        {recentSidebarChats.length > 0 ? (
-          recentSidebarChats.map((chat) => renderChatItem(chat))
+        {groupedSidebarChats.flattenCount > 0 ? (
+          <>
+            {groupedSidebarChats.pinned.length > 0 && (
+              <>
+                <SidebarSectionHeader
+                  title="Pinned"
+                  collapsed={isSectionCollapsed('pinned')}
+                  onToggle={() => toggleSection('pinned')}
+                />
+                {!isSectionCollapsed('pinned') && groupedSidebarChats.pinned.map((chat) => renderChatItem(chat, `pinned-${chat.id}`))}
+              </>
+            )}
+            {groupedSidebarChats.direct.length > 0 && (
+              <>
+                <SidebarSectionHeader
+                  title="Direct"
+                  collapsed={isSectionCollapsed('direct')}
+                  onToggle={() => toggleSection('direct')}
+                />
+                {!isSectionCollapsed('direct') && groupedSidebarChats.direct.map((chat) => renderChatItem(chat, `direct-${chat.id}`))}
+              </>
+            )}
+            {groupedSidebarChats.channels.map((channel) => (
+              <div key={channel.key}>
+                <SidebarSectionHeader
+                  title={channel.label}
+                  collapsed={isSectionCollapsed(`channel:${channel.key}`)}
+                  onToggle={() => toggleSection(`channel:${channel.key}`)}
+                  onOptionsClick={() => {
+                    const normalizedChannelId = normalizeChannelIdForMemory(
+                      channel.source,
+                      channel.key,
+                      channel.normalizedChannelId,
+                    );
+                    setChannelPersonalityTarget({
+                      key: channel.key,
+                      label: channel.label,
+                      source: channel.source,
+                      normalizedChannelId,
+                    });
+                  }}
+                />
+                {!isSectionCollapsed(`channel:${channel.key}`) &&
+                  channel.chats.map((chat) => renderChatItem(chat, `channel-${channel.key}-${chat.id}`))}
+              </div>
+            ))}
+            {groupedSidebarChats.uncategorized.length > 0 && (
+              <>
+                <SidebarSectionHeader
+                  title="Uncategorized"
+                  collapsed={isSectionCollapsed('uncategorized')}
+                  onToggle={() => toggleSection('uncategorized')}
+                />
+                {!isSectionCollapsed('uncategorized') &&
+                  groupedSidebarChats.uncategorized.map((chat) => renderChatItem(chat, `uncategorized-${chat.id}`))}
+              </>
+            )}
+          </>
         ) : (
           <div className="px-2 py-1.5 text-xs text-surface-500 text-center">
             No conversations yet
           </div>
         )}
       </div>
+      {channelPersonalityTarget && (
+        <ChannelPersonalityPanel
+          organizationId={organizationId}
+          channelName={channelPersonalityTarget.label}
+          source={channelPersonalityTarget.source}
+          normalizedChannelId={channelPersonalityTarget.normalizedChannelId}
+          onClose={() => setChannelPersonalityTarget(null)}
+        />
+      )}
     </div>
+  );
+}
+
+function SidebarSectionHeader({
+  title,
+  collapsed,
+  onToggle,
+  onOptionsClick,
+}: {
+  title: string;
+  collapsed: boolean;
+  onToggle: () => void;
+  onOptionsClick?: () => void;
+}): JSX.Element {
+  return (
+    <div className="px-1 pt-2 pb-1 flex items-center gap-1">
+      <button
+        type="button"
+        onClick={onToggle}
+        className="flex-1 min-w-0 px-1 py-0.5 rounded-md hover:bg-surface-800/60 transition-colors flex items-center gap-1.5 text-left"
+        aria-expanded={!collapsed}
+        aria-label={`${collapsed ? 'Expand' : 'Collapse'} ${title}`}
+      >
+        <svg
+          className={`w-3 h-3 text-surface-500 transition-transform ${collapsed ? '' : 'rotate-90'}`}
+          fill="none"
+          viewBox="0 0 24 24"
+          stroke="currentColor"
+        >
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+        </svg>
+        <h3 className="truncate text-[10px] uppercase tracking-wider text-surface-500 font-semibold">{title}</h3>
+      </button>
+      {onOptionsClick && (
+        <button
+          type="button"
+          className="p-1 rounded-md text-surface-500 hover:bg-surface-800/60 hover:text-surface-300 transition-colors"
+          aria-label={`${title} options`}
+          onClick={onOptionsClick}
+        >
+          <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="5" cy="12" r="1.8" />
+            <circle cx="12" cy="12" r="1.8" />
+            <circle cx="19" cy="12" r="1.8" />
+          </svg>
+        </button>
+      )}
+    </div>
+  );
+}
+
+function ChannelPersonalityPanel({
+  organizationId,
+  channelName,
+  source,
+  normalizedChannelId,
+  onClose,
+}: {
+  organizationId: string | null;
+  channelName: string;
+  source: string | null;
+  normalizedChannelId: string;
+  onClose: () => void;
+}): JSX.Element {
+  const [draft, setDraft] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const [isDirty, setIsDirty] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const lastSavedRef = useRef('');
+  const saveTimeoutRef = useRef<number | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+
+  useEffect(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    textarea.style.height = `${CHANNEL_PERSONALITY_TEXTAREA_BASE_HEIGHT_PX}px`;
+    textarea.style.height = `${Math.min(textarea.scrollHeight, CHANNEL_PERSONALITY_TEXTAREA_MAX_HEIGHT_PX)}px`;
+  }, [draft, isLoading]);
+
+  useEffect(() => {
+    let isActive = true;
+    const load = async (): Promise<void> => {
+      if (!organizationId || !source || !normalizedChannelId) {
+        setError('Channel identity is unavailable for this section.');
+        return;
+      }
+      setIsLoading(true);
+      setError(null);
+      const params = new URLSearchParams({
+        source: source.toLowerCase(),
+        channel_id: normalizedChannelId,
+      });
+      const { data, error: requestError } = await apiRequest<ChannelMemoryResponse | null>(`/memories/${organizationId}/channel?${params.toString()}`);
+      if (!isActive) return;
+      if (requestError) {
+        setError(requestError);
+      } else {
+        const nextValue = data?.content ?? '';
+        setDraft(nextValue);
+        lastSavedRef.current = nextValue;
+      }
+      setIsDirty(false);
+      setIsLoading(false);
+    };
+    void load();
+    return () => {
+      isActive = false;
+      if (saveTimeoutRef.current) {
+        window.clearTimeout(saveTimeoutRef.current);
+      }
+    };
+  }, [organizationId, source, normalizedChannelId]);
+
+  useEffect(() => {
+    if (!isDirty || isLoading || !organizationId || !source || !normalizedChannelId) {
+      return;
+    }
+    if (saveTimeoutRef.current) {
+      window.clearTimeout(saveTimeoutRef.current);
+    }
+    saveTimeoutRef.current = window.setTimeout(() => {
+      const persist = async (): Promise<void> => {
+        if (draft.length > CHANNEL_PERSONALITY_MAX_LENGTH) return;
+        const normalizedSource = source.toLowerCase();
+        const trimmed = draft.trim();
+        if (trimmed === lastSavedRef.current.trim()) {
+          setIsDirty(false);
+          return;
+        }
+        setIsSaving(true);
+        setError(null);
+        const params = new URLSearchParams({
+          source: normalizedSource,
+          channel_id: normalizedChannelId,
+        });
+        const endpoint = `/memories/${organizationId}/channel?${params.toString()}`;
+        const result = trimmed
+          ? await apiRequest<ChannelMemoryResponse>(endpoint, {
+            method: 'PUT',
+            body: JSON.stringify({ content: trimmed }),
+          })
+          : await apiRequest<{ status: string; memory_id: string }>(endpoint, { method: 'DELETE' });
+        if (result.error) {
+          setError(result.error);
+          setIsDirty(false);
+        } else {
+          lastSavedRef.current = trimmed;
+          setIsDirty(false);
+        }
+        setIsSaving(false);
+      };
+      void persist();
+    }, 700);
+    return () => {
+      if (saveTimeoutRef.current) {
+        window.clearTimeout(saveTimeoutRef.current);
+      }
+    };
+  }, [draft, isDirty, isLoading, organizationId, source, normalizedChannelId]);
+
+  return (
+    <>
+      <div className="fixed inset-0 bg-black/50 z-40" onClick={onClose} />
+      <div className="fixed right-0 top-0 bottom-0 w-full max-w-md bg-surface-900 border-l border-surface-800 z-50 flex flex-col shadow-2xl">
+        <header className="flex items-center justify-between px-6 py-4 border-b border-surface-800">
+          <h2 className="font-semibold text-surface-100 truncate">{channelName}</h2>
+          <button
+            onClick={onClose}
+            className="p-2 text-surface-400 hover:text-surface-200 hover:bg-surface-800 rounded-lg transition-colors"
+            aria-label="Close channel personality panel"
+          >
+            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </header>
+
+        <div className="p-6 space-y-3">
+          <div className="text-xs uppercase tracking-wide text-primary-300">Channel personality</div>
+          <p className="text-xs text-surface-400">Applied on replies in this channel. Maximum {CHANNEL_PERSONALITY_MAX_LENGTH} characters.</p>
+          {isLoading ? (
+            <p className="text-sm text-surface-400">Loading channel personality...</p>
+          ) : (
+            <>
+              <textarea
+                ref={textareaRef}
+                className="w-full rounded-lg bg-surface-800 border border-surface-700 px-3 py-2 text-sm text-surface-100 overflow-y-auto"
+                value={draft}
+                onChange={(e) => {
+                  setDraft(e.target.value);
+                  setIsDirty(true);
+                }}
+                style={{
+                  minHeight: `${CHANNEL_PERSONALITY_TEXTAREA_BASE_HEIGHT_PX}px`,
+                  maxHeight: `${CHANNEL_PERSONALITY_TEXTAREA_MAX_HEIGHT_PX}px`,
+                }}
+                placeholder="e.g. Keep answers concise, action-oriented, and include channel-specific context."
+                maxLength={CHANNEL_PERSONALITY_MAX_LENGTH}
+              />
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs text-surface-500">
+                  {draft.length}/{CHANNEL_PERSONALITY_MAX_LENGTH}
+                </span>
+                {isSaving && <span className="text-xs text-surface-500">Saving...</span>}
+              </div>
+            </>
+          )}
+          {error && <p className="text-xs text-red-400">{error}</p>}
+        </div>
+      </div>
+    </>
   );
 }

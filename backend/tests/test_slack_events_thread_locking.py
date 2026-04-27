@@ -1,4 +1,6 @@
 import asyncio
+from contextlib import asynccontextmanager
+from uuid import uuid4
 
 from api.routes import slack_events
 from messengers.base import InboundMessage, MessageType
@@ -168,3 +170,176 @@ def test_app_mention_keeps_non_bot_user_mentions_in_text(monkeypatch) -> None:
     msg: InboundMessage = captured[0]
     assert msg.message_type == MessageType.MENTION
     assert msg.text == "who is <@UJON123>?"
+
+
+def test_dm_bot_message_from_current_app_is_logged_not_processed(monkeypatch) -> None:
+    calls: list[dict[str, str]] = []
+
+    async def _fake_is_duplicate_event(_event_id: str) -> bool:
+        return False
+
+    async def _fake_log_external(*_args, **kwargs) -> bool:
+        assert kwargs["sender_category"] == "self_bot"
+        calls.append({"called": "yes"})
+        return True
+
+    monkeypatch.setattr(slack_events, "is_duplicate_event", _fake_is_duplicate_event)
+    monkeypatch.setattr(
+        slack_events,
+        "_log_bot_dm_message_without_processing",
+        _fake_log_external,
+    )
+
+    payload = {
+        "type": "event_callback",
+        "event_id": "EvBotSelf1",
+        "team_id": "T123",
+        "api_app_id": "A123",
+        "authed_users": ["UBOT"],
+        "event": {
+            "type": "message",
+            "channel_type": "im",
+            "channel": "D123",
+            "subtype": "bot_message",
+            "bot_profile": {"app_id": "A123"},
+            "text": "self bot message",
+            "ts": "1700000000.010",
+        },
+    }
+
+    asyncio.run(slack_events._process_event_callback_impl(payload))
+    assert len(calls) == 1
+
+
+def test_dm_bot_message_from_external_source_is_logged_not_processed(monkeypatch) -> None:
+    calls: list[dict[str, str]] = []
+    processed: list[InboundMessage] = []
+
+    async def _fake_is_duplicate_event(_event_id: str) -> bool:
+        return False
+
+    async def _fake_log_external(*_args, **kwargs) -> bool:
+        assert kwargs["sender_category"] == "other_bot"
+        calls.append({"called": "yes"})
+        return True
+
+    async def _fake_process_inbound(self, message: InboundMessage):
+        processed.append(message)
+        return {"status": "success"}
+
+    monkeypatch.setattr(slack_events, "is_duplicate_event", _fake_is_duplicate_event)
+    monkeypatch.setattr(
+        slack_events,
+        "_log_bot_dm_message_without_processing",
+        _fake_log_external,
+    )
+    monkeypatch.setattr(SlackMessenger, "process_inbound", _fake_process_inbound)
+
+    payload = {
+        "type": "event_callback",
+        "event_id": "EvBotExternal1",
+        "team_id": "T123",
+        "api_app_id": "A123",
+        "authed_users": ["UBOT"],
+        "event": {
+            "type": "message",
+            "channel_type": "im",
+            "channel": "D123",
+            "subtype": "bot_message",
+            "bot_profile": {"app_id": "A999"},
+            "bot_id": "B999",
+            "text": "external bot message",
+            "ts": "1700000000.020",
+        },
+    }
+
+    asyncio.run(slack_events._process_event_callback_impl(payload))
+    assert len(calls) == 1
+    assert processed == []
+
+
+def test_classify_message_sender_categories() -> None:
+    payload = {"api_app_id": "A123"}
+    bot_user_ids = {"UBOT"}
+
+    user_event = {"type": "message", "channel": "C123", "user": "U111", "text": "hello"}
+    self_bot_event = {
+        "type": "message",
+        "subtype": "bot_message",
+        "channel": "D123",
+        "bot_profile": {"app_id": "A123"},
+    }
+    other_bot_event = {
+        "type": "message",
+        "subtype": "bot_message",
+        "channel": "D123",
+        "bot_profile": {"app_id": "A999"},
+    }
+
+    assert slack_events._classify_message_sender(payload, user_event, bot_user_ids) == "user"
+    assert slack_events._classify_message_sender(payload, self_bot_event, bot_user_ids) == "self_bot"
+    assert slack_events._classify_message_sender(payload, other_bot_event, bot_user_ids) == "other_bot"
+
+
+def test_candidate_dm_source_channel_ids_prefers_thread_then_channel() -> None:
+    assert slack_events._candidate_dm_source_channel_ids(
+        channel_id="D123",
+        thread_ts="1700000000.111",
+    ) == ["D123:1700000000.111", "D123"]
+
+
+def test_candidate_dm_source_channel_ids_handles_channel_without_thread() -> None:
+    assert slack_events._candidate_dm_source_channel_ids(
+        channel_id="D123",
+        thread_ts=None,
+    ) == ["D123"]
+
+
+def test_log_bot_dm_message_uses_admin_session_for_private_conversations(monkeypatch) -> None:
+    conversation_id = uuid4()
+    used_admin_session = {"value": False}
+
+    class _FakeResult:
+        def scalar_one_or_none(self):
+            return conversation_id
+
+    class _FakeSession:
+        async def execute(self, *_args, **_kwargs):
+            return _FakeResult()
+
+        def add(self, _row) -> None:
+            return None
+
+        async def commit(self) -> None:
+            return None
+
+    @asynccontextmanager
+    async def _fake_get_admin_session():
+        used_admin_session["value"] = True
+        yield _FakeSession()
+
+    async def _fake_resolve_org(_team_id: str) -> str:
+        return str(uuid4())
+
+    class _FakeMessenger:
+        _resolve_org_from_workspace = staticmethod(_fake_resolve_org)
+
+    monkeypatch.setattr(slack_events, "get_admin_session", _fake_get_admin_session)
+
+    event = {
+        "channel_type": "im",
+        "channel": "D0AA3KFETUY",
+        "text": "bot reply in private convo",
+        "bot_id": "B123",
+    }
+    persisted = asyncio.run(
+        slack_events._log_bot_dm_message_without_processing(
+            _FakeMessenger(),
+            event,
+            "T123",
+            sender_category="self_bot",
+        )
+    )
+
+    assert persisted is True
+    assert used_admin_session["value"] is True

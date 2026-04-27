@@ -6,9 +6,11 @@ The sandbox persists across calls within a conversation.
 """
 
 import asyncio
+import json
 import logging
 import re
 from typing import Any
+from uuid import UUID
 
 from config import settings
 from connectors.base import BaseConnector
@@ -57,6 +59,58 @@ _SUDO_BLOCK_MESSAGE: str = (
 )
 
 _MAX_EGRESS_BYTES: int = 1_000_000
+_BASEBASE_USER_ID_ENV_KEY: str = "BASEBASE_USER_ID"
+_BASEBASE_ALLOWED_USER_IDS_ENV_KEY: str = "BASEBASE_ALLOWED_USER_IDS"
+_AUDIT_ALREADY_LOGGED_MARKER: object = object()
+
+
+def mark_audit_already_logged(params: dict[str, Any]) -> None:
+    """Mark action params as pre-logged by trusted internal callers only."""
+    params["_audit_logged"] = _AUDIT_ALREADY_LOGGED_MARKER
+
+
+def _is_audit_already_logged(params: dict[str, Any]) -> bool:
+    return params.get("_audit_logged") is _AUDIT_ALREADY_LOGGED_MARKER
+
+
+def _command_preview(command: str, limit: int = 240) -> str:
+    normalized: str = " ".join(command.split())
+    return normalized if len(normalized) <= limit else f"{normalized[:limit]}..."
+
+
+async def _record_sandbox_command_intent(
+    organization_id: str,
+    user_id: str,
+    conversation_id: str,
+    command: str,
+    sandbox_id: str,
+) -> UUID | None:
+    from services.action_ledger import record_intent
+
+    return await record_intent(
+        organization_id=organization_id,
+        user_id=user_id,
+        context={"conversation_id": conversation_id},
+        connector="code_sandbox",
+        dispatch_type="action",
+        operation="execute_command",
+        data={
+            "command": command,
+            "sandbox_id": sandbox_id,
+            "audit_source": "connector",
+        },
+        connector_instance=None,
+    )
+
+
+async def _record_sandbox_command_outcome(
+    change_id: UUID | None,
+    organization_id: str,
+    result: dict[str, Any],
+) -> None:
+    from services.action_ledger import record_outcome
+
+    await record_outcome(change_id=change_id, organization_id=organization_id, result=result)
 
 
 def _compile_command_invocation_pattern(command: str) -> re.Pattern[str]:
@@ -121,8 +175,21 @@ _DB_USER: str = os.environ["DB_USER"]
 _DB_PASSWORD: str = os.environ["DB_PASSWORD"]
 _DB_SSLMODE: str = os.environ.get("DB_SSLMODE", "prefer")
 _ORG_ID: str = os.environ["ORG_ID"]
+_USER_ID: str = os.environ["BASEBASE_USER_ID"]
+_ALLOWED_USER_IDS_RAW: str = os.environ.get("BASEBASE_ALLOWED_USER_IDS", "")
+_ALLOWED_USER_IDS: set[str] = {uid.strip() for uid in _ALLOWED_USER_IDS_RAW.split(",") if uid.strip()}
+_EXPECTED_USER_ID: str = __EXPECTED_USER_ID__
+_EXPECTED_ALLOWED_USER_IDS: set[str] = set(__EXPECTED_ALLOWED_USER_IDS__)
 
 def get_connection() -> psycopg2.extensions.connection:
+    if _USER_ID != _EXPECTED_USER_ID:
+        raise PermissionError("BASEBASE_USER_ID does not match the sandbox caller context")
+
+    if _ALLOWED_USER_IDS and _USER_ID not in _ALLOWED_USER_IDS:
+        raise PermissionError("BASEBASE_USER_ID is not in BASEBASE_ALLOWED_USER_IDS")
+    if _EXPECTED_ALLOWED_USER_IDS and _USER_ID not in _EXPECTED_ALLOWED_USER_IDS:
+        raise PermissionError("BASEBASE_USER_ID is not in the expected conversation allow-list")
+
     conn: psycopg2.extensions.connection = psycopg2.connect(
         host=_DB_HOST,
         port=_DB_PORT,
@@ -135,9 +202,19 @@ def get_connection() -> psycopg2.extensions.connection:
     with conn.cursor() as cur:
         cur.execute("SET ROLE revtops_app")
         cur.execute("SET app.current_org_id = %s", (_ORG_ID,))
+        cur.execute("SET app.current_user_id = %s", (_USER_ID,))
         cur.execute("SET default_transaction_read_only = on")
     return conn
 """.strip()
+
+
+def _build_sandbox_db_helper_template(basebase_user_id: str, allowed_user_ids_csv: str) -> str:
+    expected_allowed_user_ids: list[str] = [uid for uid in allowed_user_ids_csv.split(",") if uid]
+    return (
+        _SANDBOX_DB_HELPER_TEMPLATE
+        .replace("__EXPECTED_USER_ID__", json.dumps(basebase_user_id))
+        .replace("__EXPECTED_ALLOWED_USER_IDS__", json.dumps(expected_allowed_user_ids))
+    )
 
 
 class CodeSandboxConnector(BaseConnector):
@@ -192,6 +269,7 @@ class CodeSandboxConnector(BaseConnector):
         return await self._execute_command(params)
 
     async def _execute_command(self, params: dict[str, Any]) -> dict[str, Any]:
+        audit_already_logged: bool = _is_audit_already_logged(params)
         command: str = (params.get("command") or "").strip()
         if not command:
             return {"error": "No command provided."}
@@ -200,12 +278,42 @@ class CodeSandboxConnector(BaseConnector):
         if blocked_reason:
             return {"error": blocked_reason}
 
-        if not settings.E2B_API_KEY:
-            return {"error": "E2B_API_KEY is not configured. Cannot run sandboxed commands."}
-
         conversation_id: str | None = params.get("conversation_id")
         if not conversation_id:
             return {"error": "execute_command requires a conversation context."}
+
+        basebase_user_id: str = str(params.get("basebase_user_id") or "").strip()
+        if not basebase_user_id:
+            return {
+                "error": (
+                    "Code sandbox execution requires an authenticated Basebase user. "
+                    "Unable to resolve current user context."
+                )
+            }
+
+        if not settings.E2B_API_KEY:
+            return {"error": "E2B_API_KEY is not configured. Cannot run sandboxed commands."}
+
+        conversation_allowed_user_ids: list[str] = await _get_conversation_allowed_user_ids(
+            conversation_id,
+            self.organization_id,
+        )
+        pending_participant_user_ids: list[str] = _extract_pending_participant_user_ids(params)
+        if pending_participant_user_ids:
+            conversation_allowed_user_ids = sorted(set(conversation_allowed_user_ids).union(pending_participant_user_ids))
+        if basebase_user_id not in conversation_allowed_user_ids:
+            logger.warning(
+                "[Sandbox] User %s is not allowed for conversation %s",
+                basebase_user_id,
+                conversation_id,
+            )
+            return {
+                "error": (
+                    "Code sandbox execution is only allowed for conversation participants. "
+                    "Current user is not in the conversation allow-list."
+                )
+            }
+        allowed_user_ids_csv: str = ",".join(conversation_allowed_user_ids)
 
         sandbox_id: str | None = await _get_sandbox_id_from_db(conversation_id, self.organization_id)
         if sandbox_id is not None:
@@ -213,14 +321,52 @@ class CodeSandboxConnector(BaseConnector):
             if not alive:
                 logger.info("[Sandbox] Sandbox %s expired or dead, creating new one", sandbox_id)
                 sandbox_id = None
+            else:
+                existing_context: dict[str, str] = await asyncio.to_thread(_get_sandbox_context_sync, sandbox_id)
+                existing_user_id: str = existing_context.get("basebase_user_id", "")
+                existing_allowed_user_ids: str = existing_context.get("basebase_allowed_user_ids", "")
+                if existing_user_id != basebase_user_id or existing_allowed_user_ids != allowed_user_ids_csv:
+                    logger.info(
+                        "[Sandbox] Recreating sandbox %s due to user/allow-list context change "
+                        "(existing_user_id=%s, requested_user_id=%s)",
+                        sandbox_id,
+                        existing_user_id,
+                        basebase_user_id,
+                    )
+                    await asyncio.to_thread(_kill_sandbox_sync, sandbox_id)
+                    sandbox_id = None
 
         if sandbox_id is None:
             try:
-                sandbox_id = await asyncio.to_thread(_create_sandbox_sync, self.organization_id, conversation_id)
+                sandbox_id = await asyncio.to_thread(
+                    _create_sandbox_sync,
+                    self.organization_id,
+                    conversation_id,
+                    basebase_user_id,
+                    allowed_user_ids_csv,
+                )
                 await _save_sandbox_id_to_db(conversation_id, self.organization_id, sandbox_id)
             except Exception as exc:
                 logger.error("[Sandbox] Failed to create sandbox: %s", exc)
                 return {"error": f"Failed to create sandbox: {exc}"}
+
+        logger.info(
+            "[Sandbox] Executing command org=%s conversation=%s user=%s sandbox=%s command_preview=%s",
+            self.organization_id,
+            conversation_id,
+            basebase_user_id,
+            sandbox_id,
+            _command_preview(command),
+        )
+        command_change_id: UUID | None = None
+        if not audit_already_logged:
+            command_change_id = await _record_sandbox_command_intent(
+                organization_id=self.organization_id,
+                user_id=basebase_user_id,
+                conversation_id=conversation_id,
+                command=command,
+                sandbox_id=sandbox_id,
+            )
 
         try:
             result: dict[str, Any] = await asyncio.to_thread(_run_command_sync, sandbox_id, command)
@@ -229,6 +375,12 @@ class CodeSandboxConnector(BaseConnector):
             if "not found" in error_str.lower() or "not running" in error_str.lower():
                 await _save_sandbox_id_to_db(conversation_id, self.organization_id, None)
             logger.error("[Sandbox] Command execution failed: %s", exc)
+            if not audit_already_logged:
+                await _record_sandbox_command_outcome(
+                    change_id=command_change_id,
+                    organization_id=self.organization_id,
+                    result={"error": f"Command execution failed: {error_str}", "sandbox_id": sandbox_id},
+                )
             return {"error": f"Command execution failed: {error_str}"}
 
         stdout: str = result["stdout"]
@@ -253,6 +405,13 @@ class CodeSandboxConnector(BaseConnector):
                 tool_result["output_files_note"] = f"Files available in /home/user/output/: {', '.join(artifact_names)}"
         except Exception as exc:
             logger.warning("[Sandbox] Failed to list output files: %s", exc)
+
+        if not audit_already_logged:
+            await _record_sandbox_command_outcome(
+                change_id=command_change_id,
+                organization_id=self.organization_id,
+                result={**tool_result, "sandbox_id": sandbox_id},
+            )
 
         return tool_result
 
@@ -285,20 +444,129 @@ async def _save_sandbox_id_to_db(conversation_id: str, organization_id: str, san
 
 # ---- Synchronous E2B helpers (run via asyncio.to_thread) --------------------
 
-def _create_sandbox_sync(organization_id: str, conversation_id: str) -> str:
+def _create_sandbox_sync(
+    organization_id: str,
+    conversation_id: str,
+    basebase_user_id: str,
+    allowed_user_ids_csv: str,
+) -> str:
     from e2b import Sandbox
 
     sandbox_db_env: dict[str, str] = settings.sandbox_database_connection_env
     sandbox: Sandbox = Sandbox.create(
         timeout=_SANDBOX_TIMEOUT_SECONDS,
-        envs={**sandbox_db_env, "ORG_ID": organization_id},
-        metadata={"conversation_id": conversation_id, "organization_id": organization_id},
+        envs={
+            **sandbox_db_env,
+            "ORG_ID": organization_id,
+            _BASEBASE_USER_ID_ENV_KEY: basebase_user_id,
+            _BASEBASE_ALLOWED_USER_IDS_ENV_KEY: allowed_user_ids_csv,
+        },
+        metadata={
+            "conversation_id": conversation_id,
+            "organization_id": organization_id,
+            "basebase_user_id": basebase_user_id,
+            "basebase_allowed_user_ids": allowed_user_ids_csv,
+        },
         api_key=settings.E2B_API_KEY,
     )
-    sandbox.files.write("/home/user/db.py", _SANDBOX_DB_HELPER_TEMPLATE)
+    sandbox.files.write(
+        "/home/user/db.py",
+        _build_sandbox_db_helper_template(basebase_user_id, allowed_user_ids_csv),
+    )
     sandbox.files.make_dir("/home/user/output")
     logger.info("[Sandbox] Created sandbox %s for conversation %s", sandbox.sandbox_id, conversation_id[:8])
     return sandbox.sandbox_id
+
+
+def _normalize_allowed_user_ids(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return ",".join(sorted({item.strip() for item in value.split(",") if item.strip()}))
+    if isinstance(value, (list, tuple, set)):
+        normalized: set[str] = {str(item).strip() for item in value if str(item).strip()}
+        return ",".join(sorted(normalized))
+    return ""
+
+
+def _extract_pending_participant_user_ids(params: dict[str, Any]) -> list[str]:
+    raw_values: list[Any] = []
+    for key in (
+        "pending_participant_user_ids",
+        "pending_participating_user_ids",
+        "about_to_add_participant_user_ids",
+        "about_to_add_user_ids",
+    ):
+        if key in params:
+            raw_values.append(params.get(key))
+
+    normalized: set[str] = set()
+    for value in raw_values:
+        if value is None:
+            continue
+        if isinstance(value, str):
+            for item in value.split(","):
+                user_id = item.strip()
+                if user_id:
+                    normalized.add(user_id)
+            continue
+        if isinstance(value, (list, tuple, set)):
+            for item in value:
+                user_id = str(item).strip()
+                if user_id:
+                    normalized.add(user_id)
+
+    return sorted(normalized)
+
+
+def _get_sandbox_context_sync(sandbox_id: str) -> dict[str, str]:
+    from e2b import Sandbox
+
+    try:
+        sandbox: Sandbox = Sandbox.connect(sandbox_id, api_key=settings.E2B_API_KEY)
+        metadata: dict[str, Any] = {}
+
+        if hasattr(sandbox, "get_info"):
+            info = sandbox.get_info()
+            if isinstance(info, dict):
+                metadata = dict(info.get("metadata") or {})
+            else:
+                metadata = dict(getattr(info, "metadata", {}) or {})
+        elif hasattr(sandbox, "metadata"):
+            metadata = dict(getattr(sandbox, "metadata", {}) or {})
+
+        return {
+            "basebase_user_id": str(metadata.get("basebase_user_id") or "").strip(),
+            "basebase_allowed_user_ids": _normalize_allowed_user_ids(metadata.get("basebase_allowed_user_ids")),
+        }
+    except Exception as exc:
+        logger.warning("[Sandbox] Failed to inspect sandbox metadata for %s: %s", sandbox_id, exc)
+        return {"basebase_user_id": "", "basebase_allowed_user_ids": ""}
+
+
+async def _get_conversation_allowed_user_ids(conversation_id: str, organization_id: str) -> list[str]:
+    from sqlalchemy import text as sa_text
+    from models.database import get_session
+
+    async with get_session(organization_id=organization_id) as session:
+        row = (
+            await session.execute(
+                sa_text(
+                    "SELECT user_id, participating_user_ids "
+                    "FROM conversations WHERE id = CAST(:cid AS uuid)"
+                ).bindparams(cid=conversation_id)
+            )
+        ).one_or_none()
+
+    if row is None:
+        return []
+
+    owner_user_id: Any = row[0]
+    participant_user_ids: list[Any] = list(row[1] or [])
+    normalized: set[str] = {str(uid).strip() for uid in participant_user_ids if str(uid).strip()}
+    if owner_user_id:
+        normalized.add(str(owner_user_id).strip())
+    return sorted(normalized)
 
 
 def _is_sandbox_alive_sync(sandbox_id: str) -> bool:

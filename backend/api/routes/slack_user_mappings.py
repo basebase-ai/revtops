@@ -187,18 +187,17 @@ async def list_user_mappings_for_identity(
             .order_by(ExternalIdentityMapping.updated_at.desc(), ExternalIdentityMapping.created_at.desc())
         )
         mappings = result.scalars().all()
-
-    response = [
-        SlackMappingResponse(
-            id=str(mapping.id),
-            external_userid=mapping.external_userid,
-            external_email=mapping.external_email,
-            source=mapping.source,
-            match_source=mapping.match_source,
-            created_at=mapping.created_at.isoformat() + "Z",
-        )
-        for mapping in mappings
-    ]
+        response = [
+            SlackMappingResponse(
+                id=str(mapping.id),
+                external_userid=mapping.external_userid,
+                external_email=mapping.external_email,
+                source=mapping.source,
+                match_source=mapping.match_source,
+                created_at=mapping.created_at.isoformat() + "Z",
+            )
+            for mapping in mappings
+        ]
     return SlackMappingListResponse(mappings=response)
 
 
@@ -228,15 +227,14 @@ async def request_slack_user_mapping_code(
             .order_by(ExternalIdentityMapping.updated_at.desc())
         )
         matched_mappings = result.scalars().all()
-
-    slack_user_candidates: list[str] = []
-    seen_candidates: set[str] = set()
-    for mapping in matched_mappings:
-        candidate = (mapping.external_userid or "").strip()
-        if not candidate or candidate in seen_candidates:
-            continue
-        seen_candidates.add(candidate)
-        slack_user_candidates.append(candidate)
+        slack_user_candidates: list[str] = []
+        seen_candidates: set[str] = set()
+        for mapping in matched_mappings:
+            candidate = (mapping.external_userid or "").strip()
+            if not candidate or candidate in seen_candidates:
+                continue
+            seen_candidates.add(candidate)
+            slack_user_candidates.append(candidate)
 
     logger.info(
         "[user_mappings_for_identity] Lookup Slack mapping for org=%s user=%s email=%s matched=%s",

@@ -55,8 +55,8 @@ logger = logging.getLogger(__name__)
 _configured_openai_research_model = (settings.OPENAI_RESEARCH_MODEL or "").strip()
 _preferred_openai_research_model = (
     _configured_openai_research_model
-    if _configured_openai_research_model.startswith("gpt-5")
-    else "gpt-5"
+    if _configured_openai_research_model.startswith("gpt-5.5")
+    else "gpt-5.5"
 )
 
 # Prefer GPT-5 family models for all research synthesis calls.
@@ -64,14 +64,15 @@ OPENAI_WEB_RESEARCH_FALLBACK_MODELS: tuple[str, ...] = tuple(
     dict.fromkeys(
         (
             _preferred_openai_research_model,
+            "gpt-5.5",
             "gpt-5",
-            "gpt-5-mini",
-            "gpt-5-nano",
+            "gpt-5.5-mini",
+            "gpt-5.5-nano",
         )
     )
 )
 
-if _configured_openai_research_model and not _configured_openai_research_model.startswith("gpt-5"):
+if _configured_openai_research_model and not _configured_openai_research_model.startswith("gpt-5.5"):
     logger.warning(
         "[Tools] OPENAI_RESEARCH_MODEL=%s is not GPT-5+. Falling back to GPT-5 family for research synthesis.",
         _configured_openai_research_model,
@@ -1168,11 +1169,22 @@ async def _run_on_connector(
     if not action:
         return {"error": "action is required"}
 
-    # Inject conversation_id for code_sandbox execute_command
+    # Inject code_sandbox context requirements
     if connector == "code_sandbox" and action == "execute_command":
+        from connectors.code_sandbox import mark_audit_already_logged
+
+        if not user_id:
+            return {
+                "error": (
+                    "Code sandbox execution requires an authenticated Basebase user. "
+                    "Unauthenticated access is not allowed."
+                )
+            }
         conversation_id: str | None = (context or {}).get("conversation_id")
         if conversation_id:
             action_params["conversation_id"] = conversation_id
+        action_params["basebase_user_id"] = user_id
+        mark_audit_already_logged(action_params)
 
     dp_ctx = ConnectorContext(
         organization_id=organization_id,
@@ -1191,9 +1203,13 @@ async def _run_on_connector(
 
     from services.action_ledger import record_intent, record_outcome
 
+    ledger_action_params: dict[str, Any] = {
+        key: value for key, value in action_params.items() if key != "_audit_logged"
+    }
+
     change_id = await record_intent(
         organization_id, user_id, context, connector,
-        dispatch_type="action", operation=action, data=action_params,
+        dispatch_type="action", operation=action, data=ledger_action_params,
         connector_instance=instance,
     )
     cross_user_warning = _build_cross_user_connector_warning(connector, instance, user_id)
@@ -6164,7 +6180,7 @@ async def execute_keep_notes(
 
 
 GLOBAL_COMMAND_CATEGORY = "global_commands"
-GLOBAL_COMMAND_MAX_LENGTH = 400
+GLOBAL_COMMAND_MAX_LENGTH = 1000
 SUPPORTED_MEMORY_ENTITY_TYPES = {"user", "organization_member"}
 ORG_LEVEL_MEMORY_ERROR = (
     "Org-level memories are not allowed. "

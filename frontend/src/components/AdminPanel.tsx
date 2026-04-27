@@ -12,6 +12,7 @@ import ReactMarkdown from 'react-markdown';
 import { API_BASE, apiRequest, getAuthenticatedRequestHeaders } from '../lib/api';
 import { useDeleteOrganization } from '../hooks';
 import { useAppStore, useAuthStore, useChatStore, type UserProfile, type OrganizationInfo } from '../store';
+import { GraphMagic } from './GraphMagic';
 
 // ─── Dashboard types ─────────────────────────────────────────────────────────
 
@@ -736,6 +737,8 @@ export function AdminPanel(): JSX.Element {
       void fetchQueryOutcomeRate();
     } else if (activeTab === 'jobs') {
       void fetchRunningJobs();
+    } else if (activeTab === 'graph-magic') {
+      // graph tab fetches on-demand in component
     }
   }, [activeTab, fetchCreditUsage, fetchTopConversations, fetchWaitlist, fetchUsers, fetchOrganizations, fetchIntegrations, fetchQueryOutcomeRate, fetchRunningJobs]);
 
@@ -1254,7 +1257,7 @@ export function AdminPanel(): JSX.Element {
         </div>
       </header>
 
-      <div className="mx-auto max-w-6xl px-4 py-4 md:px-8 md:py-6">
+      <div className={activeTab === 'graph-magic' ? 'w-full px-4 py-4 md:px-8 md:py-6' : 'mx-auto max-w-6xl px-4 py-4 md:px-8 md:py-6'}>
         {/* Dashboard Tab Content */}
         {activeTab === 'dashboard' && (
           <div className="space-y-8">
@@ -2602,6 +2605,10 @@ export function AdminPanel(): JSX.Element {
               </div>
             )}
           </div>
+        )}
+
+        {activeTab === 'graph-magic' && (
+          <GraphMagic />
         )}
 
         {activeTab === 'jobs' && (

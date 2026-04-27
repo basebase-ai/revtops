@@ -10,7 +10,9 @@ Provides endpoints to:
 - Download artifacts as files
 - List artifacts in a conversation
 """
-from typing import Optional
+import html
+import json
+from typing import Any, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -328,7 +330,10 @@ async def download_artifact(
             )
         
         elif content_type == "chart":
-            html_content: str = _generate_chart_html(artifact.content, artifact.title or "Chart")
+            try:
+                html_content: str = _generate_chart_html(artifact.content, artifact.title or "Chart")
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
             if not filename.endswith(".html"):
                 filename = filename.rsplit(".", 1)[0] + ".html"
             return Response(
@@ -430,20 +435,46 @@ def _get_extension(content_type: str) -> str:
 def _generate_chart_html(plotly_json: str, title: str) -> str:
     """
     Generate standalone HTML file with embedded Plotly chart.
-    
+
     Args:
         plotly_json: Plotly figure specification as JSON string
         title: Chart title for HTML page
-        
+
     Returns:
         Complete HTML document as string
+
+    Raises:
+        ValueError: If the chart payload is invalid
     """
+    try:
+        chart_spec: Any = json.loads(plotly_json)
+    except json.JSONDecodeError as exc:
+        raise ValueError("Invalid chart JSON payload") from exc
+
+    if not isinstance(chart_spec, dict):
+        raise ValueError("Invalid chart payload: expected a JSON object")
+
+    data = chart_spec.get("data")
+    if not isinstance(data, list):
+        raise ValueError("Invalid chart payload: 'data' must be a JSON array")
+
+    layout = chart_spec.get("layout")
+    if layout is not None and not isinstance(layout, dict):
+        raise ValueError("Invalid chart payload: 'layout' must be a JSON object")
+
+    config = chart_spec.get("config")
+    if config is not None and not isinstance(config, dict):
+        raise ValueError("Invalid chart payload: 'config' must be a JSON object")
+
+    safe_title: str = html.escape(title, quote=True)
+    safe_chart_json: str = json.dumps(chart_spec, ensure_ascii=False).replace("</", "<\\/")
+
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{title}</title>
+    <title>{safe_title}</title>
     <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
     <style>
         body {{
@@ -461,8 +492,8 @@ def _generate_chart_html(plotly_json: str, title: str) -> str:
 <body>
     <div id="chart"></div>
     <script>
-        const spec = {plotly_json};
-        Plotly.newPlot('chart', spec.data, spec.layout || {{}}, {{responsive: true}});
+        const spec = {safe_chart_json};
+        Plotly.newPlot('chart', spec.data, spec.layout || {{}}, {{responsive: true, ...(spec.config || {{}})}});
     </script>
 </body>
 </html>"""

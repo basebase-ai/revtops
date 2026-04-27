@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@codesandbox/sandpack-react": "^2.20.0",
+    "@cosmograph/react": "1.4.2",
     "@nangohq/frontend": "^0.69.49",
     "@stripe/react-stripe-js": "^2.4.0",
     "@stripe/stripe-js": "^2.4.0",
@@ -39,7 +40,7 @@
     "eslint": "^8.56.0",
     "eslint-plugin-react-hooks": "^4.6.0",
     "eslint-plugin-react-refresh": "^0.4.5",
-    "postcss": "^8.4.35",
+    "postcss": "^8.5.12",
     "tailwindcss": "^3.4.1",
     "typescript": "^5.3.3",
     "vite": "^7.3.2"

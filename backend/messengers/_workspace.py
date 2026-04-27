@@ -119,7 +119,7 @@ def _resolve_conversation_scope(
         return "shared"
 
     if channel_type in {"mpim", "groupchat"}:
-        return "shared"
+        return "private"
 
     identity_known: bool = bool(revtops_user_id or message.external_user_id)
     return "private" if identity_known else "shared"
@@ -136,6 +136,7 @@ def _build_workflow_context_for_message(
         slack_channel_id: str | None = ctx.get("channel_id")
         slack_thread_ts: str | None = ctx.get("thread_id") or ctx.get("thread_ts")
         slack_channel_name: str | None = ctx.get("channel_name")
+        slack_channel_type: str | None = ctx.get("channel_type")
 
         if slack_channel_id and not workflow_context.get("slack_channel_id"):
             workflow_context["slack_channel_id"] = slack_channel_id
@@ -143,6 +144,12 @@ def _build_workflow_context_for_message(
             workflow_context["slack_thread_ts"] = slack_thread_ts
         if slack_channel_name and not workflow_context.get("slack_channel_name"):
             workflow_context["slack_channel_name"] = slack_channel_name
+        if slack_channel_type and not workflow_context.get("slack_channel_type"):
+            # NOTE FOR FUTURE CODE AGENTS (e.g., Codex):
+            # DM policy decisions should generally be kept consistent across 1:1 DMs,
+            # group DMs, and private channels unless an explicit product requirement
+            # says otherwise.
+            workflow_context["slack_channel_type"] = slack_channel_type
 
     return workflow_context or None
 
@@ -316,6 +323,12 @@ class WorkspaceMessenger(BaseMessenger):
                 self.meta.slug, message.external_user_id, workspace_id,
             )
 
+        await self._ensure_unmapped_identity(
+            organization_id=organization_id,
+            external_user_id=message.external_user_id,
+            external_email=email,
+        )
+
         return await self._resolve_guest_user(organization_id)
 
     def _extract_email_from_profile(self, profile: dict[str, Any]) -> str | None:
@@ -360,6 +373,56 @@ class WorkspaceMessenger(BaseMessenger):
             if guest and getattr(guest, "is_guest", False):
                 return guest
             return None
+
+    async def _ensure_unmapped_identity(
+        self,
+        organization_id: str,
+        external_user_id: str,
+        external_email: str | None,
+    ) -> None:
+        """Create an unmapped ExternalIdentityMapping so admins can manually link it."""
+        from models.external_identity_mapping import ExternalIdentityMapping
+
+        platform: str = self.meta.slug
+        normalized_ext_id: str = external_user_id.strip().upper() if external_user_id else ""
+        if not normalized_ext_id:
+            return
+        try:
+            async with get_admin_session() as session:
+                existing = await session.execute(
+                    select(ExternalIdentityMapping)
+                    .where(ExternalIdentityMapping.organization_id == UUID(organization_id))
+                    .where(ExternalIdentityMapping.source == platform)
+                    .where(ExternalIdentityMapping.external_userid == normalized_ext_id)
+                    .limit(1)
+                )
+                if existing.scalar_one_or_none() is not None:
+                    return
+                now: datetime = datetime.now(UTC).replace(tzinfo=None)
+                mapping = ExternalIdentityMapping(
+                    id=_uuid.uuid4(),
+                    organization_id=UUID(organization_id),
+                    user_id=None,
+                    revtops_email=None,
+                    external_userid=normalized_ext_id,
+                    external_email=external_email,
+                    source=platform,
+                    match_source="messenger_unmatched",
+                    created_at=now,
+                    updated_at=now,
+                )
+                session.add(mapping)
+                await session.commit()
+                logger.info(
+                    "[%s] Created unmapped identity org=%s ext=%s email=%s",
+                    platform, organization_id, normalized_ext_id, external_email,
+                )
+        except Exception:
+            logger.debug(
+                "[%s] Failed to create unmapped identity org=%s ext=%s",
+                platform, organization_id, normalized_ext_id,
+                exc_info=True,
+            )
 
     # ------------------------------------------------------------------
     # Organisation resolution
@@ -414,6 +477,45 @@ class WorkspaceMessenger(BaseMessenger):
             row = result.first()
             if row:
                 org_id = str(row[0])
+
+        # 1b. Validate the bot-install org has an active subscription; if not,
+        #     check Integration table for an org that does (same workspace may
+        #     be connected to a stale org with no credits).
+        if org_id is not None:
+            async with get_admin_session() as session:
+                org_row = await session.execute(
+                    select(Organization.subscription_status).where(
+                        Organization.id == UUID(org_id)
+                    )
+                )
+                status: str | None = (org_row.scalar_one_or_none() or "")
+                if status not in ("active", "trialing"):
+                    alt_result = await session.execute(
+                        select(Integration.organization_id, Organization.subscription_status)
+                        .join(Organization, Organization.id == Integration.organization_id)
+                        .where(Integration.connector == platform)
+                        .where(Integration.is_active == True)  # noqa: E712
+                        .where(Organization.subscription_status.in_(("active", "trialing")))
+                    )
+                    for alt_row in alt_result:
+                        alt_extra_check = await session.execute(
+                            select(Integration.extra_data)
+                            .where(Integration.organization_id == alt_row[0])
+                            .where(Integration.connector == platform)
+                            .where(Integration.is_active == True)  # noqa: E712
+                        )
+                        for (extra_data_row,) in alt_extra_check:
+                            stored_ws: str | None = (extra_data_row or {}).get("team_id") or (extra_data_row or {}).get("workspace_id")
+                            if stored_ws == workspace_id:
+                                logger.info(
+                                    "[%s] Bot-install org %s has no active subscription; "
+                                    "preferring org %s with status=%s for workspace %s",
+                                    platform, org_id, alt_row[0], alt_row[1], workspace_id,
+                                )
+                                org_id = str(alt_row[0])
+                                break
+                        if org_id != str(row[0]):
+                            break
 
         # 2. Fall back to Integration table (for Nango-based installs)
         if org_id is None:
@@ -1148,6 +1250,21 @@ class WorkspaceMessenger(BaseMessenger):
                     "sender_slack_id": message.external_user_id,
                     "thread_ts": thread_id,
                 }
+                raw_files: Any = message.raw_attachments or []
+                if isinstance(raw_files, list):
+                    persisted_files: list[dict[str, Any]] = [
+                        file_data
+                        for file_data in raw_files
+                        if isinstance(file_data, dict)
+                    ]
+                    if persisted_files:
+                        custom_fields["files"] = persisted_files
+                        logger.debug(
+                            "[%s] Persisting %d attachment(s) in activity cache source_id=%s",
+                            self.meta.slug,
+                            len(persisted_files),
+                            source_id,
+                        )
                 if channel_name:
                     custom_fields["channel_name"] = channel_name
 
