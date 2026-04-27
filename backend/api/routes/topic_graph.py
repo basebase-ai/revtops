@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from api.auth_middleware import AuthContext, require_global_admin
-from services.topic_graph import get_node_evidence, get_topic_graph_snapshot
+from services.topic_graph import get_node_evidence, get_topic_graph_snapshot, list_topic_graph_snapshot_dates
 from workers.tasks.topic_graph import rebuild_org_date_range
 
 router = APIRouter()
@@ -37,6 +37,24 @@ async def get_graph_snapshot(
         "status": snapshot.status,
         "graph": snapshot.graph_payload,
         "run_metadata": snapshot.run_metadata,
+    }
+
+
+@router.get("/{organization_id}/snapshot-dates")
+async def get_graph_snapshot_dates(
+    organization_id: str,
+    auth: AuthContext = Depends(require_global_admin),
+) -> dict[str, Any]:
+    dates = await list_topic_graph_snapshot_dates(organization_id)
+    logger.info(
+        "topic_graph.stage=list_snapshot_dates org_id=%s count=%d by=%s",
+        organization_id,
+        len(dates),
+        auth.user_id,
+    )
+    return {
+        "organization_id": organization_id,
+        "snapshot_dates": [d.isoformat() for d in dates],
     }
 
 

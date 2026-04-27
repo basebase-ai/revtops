@@ -10,7 +10,7 @@ from datetime import date, datetime, time, timedelta, timezone
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import Select, and_, delete, func, select, text
+from sqlalchemy import Select, and_, delete, desc, func, select, text
 from sqlalchemy.dialects.postgresql import insert
 
 from config import settings
@@ -429,6 +429,16 @@ async def get_topic_graph_snapshot(org_id: str, graph_date: date) -> TopicGraphS
             )
         )
         return row.scalar_one_or_none()
+
+
+async def list_topic_graph_snapshot_dates(org_id: str) -> list[date]:
+    async with get_admin_session() as session:
+        rows = await session.execute(
+            select(TopicGraphSnapshot.graph_date)
+            .where(TopicGraphSnapshot.organization_id == UUID(org_id))
+            .order_by(desc(TopicGraphSnapshot.graph_date))
+        )
+        return [row[0] for row in rows.all()]
 
 
 def _rank_evidence(evidence_rows: list[dict[str, Any]], node_id: str) -> list[dict[str, Any]]:

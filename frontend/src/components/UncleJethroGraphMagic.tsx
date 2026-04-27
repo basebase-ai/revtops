@@ -25,6 +25,11 @@ type GraphResponse = {
   run_metadata: { coverage?: { partial?: boolean; warning_text?: string } };
 };
 
+type SnapshotDatesResponse = {
+  organization_id: string;
+  snapshot_dates: string[];
+};
+
 type AdminOrganization = {
   id: string;
   name: string;
@@ -42,6 +47,7 @@ export function UncleJethroGraphMagic(): JSX.Element {
   const [sizeMode, setSizeMode] = useState<NodeSizeMode>('composite');
   const [snippets, setSnippets] = useState<Array<{ ref: string; snippet: string; event_time: string; source_display?: string }>>([]);
   const [availableOrgs, setAvailableOrgs] = useState<AdminOrganization[]>([]);
+  const [snapshotDates, setSnapshotDates] = useState<string[]>([]);
 
   const partialWarning = graph?.run_metadata?.coverage?.partial ? 'Partial data: some sources failed' : null;
 
@@ -84,7 +90,7 @@ export function UncleJethroGraphMagic(): JSX.Element {
   }, [orgId, startDate, endDate]);
 
   const fetchGraph = async (): Promise<void> => {
-    if (!orgId) return;
+    if (!orgId || !selectedDate) return;
     console.debug('[UJ Graph Magic] Fetching graph snapshot', { orgId, selectedDate });
     const { data, error: reqErr } = await apiRequest<GraphResponse>(`/admin-topic-graph/${orgId}/${selectedDate}`);
     if (reqErr || !data) {
@@ -98,6 +104,40 @@ export function UncleJethroGraphMagic(): JSX.Element {
   useEffect(() => {
     void fetchGraph();
   // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [orgId, selectedDate]);
+
+  useEffect(() => {
+    const fetchSnapshotDates = async (): Promise<void> => {
+      if (!orgId) {
+        setSnapshotDates([]);
+        setGraph(null);
+        return;
+      }
+      console.debug('[UJ Graph Magic] Fetching available snapshot dates', { orgId });
+      const { data, error: reqErr } = await apiRequest<SnapshotDatesResponse>(`/admin-topic-graph/${orgId}/snapshot-dates`);
+      if (reqErr || !data) {
+        console.debug('[UJ Graph Magic] Could not load snapshot dates', { orgId, reqErr });
+        setSnapshotDates([]);
+        setGraph(null);
+        return;
+      }
+      setSnapshotDates(data.snapshot_dates);
+      if (data.snapshot_dates.length === 0) {
+        setGraph(null);
+      }
+      if (!data.snapshot_dates.includes(selectedDate)) {
+        const latestDate = data.snapshot_dates[0];
+        if (latestDate) {
+          console.debug('[UJ Graph Magic] Resetting selected date to latest available snapshot', {
+            orgId,
+            previousDate: selectedDate,
+            latestDate,
+          });
+          setSelectedDate(latestDate);
+        }
+      }
+    };
+    void fetchSnapshotDates();
   }, [orgId, selectedDate]);
 
   const rebuild = async (): Promise<void> => {
@@ -205,7 +245,22 @@ export function UncleJethroGraphMagic(): JSX.Element {
         </label>
         <label className="flex flex-col gap-1 text-xs text-surface-400">
           <span>Selected date (graph view)</span>
-          <input type="date" className="px-3 py-2 rounded bg-surface-800" value={selectedDate} onChange={(e) => setSelectedDate(e.target.value)} />
+          <select
+            className="px-3 py-2 rounded bg-surface-800 text-surface-100"
+            value={snapshotDates.includes(selectedDate) ? selectedDate : ''}
+            onChange={(e) => setSelectedDate(e.target.value)}
+            disabled={snapshotDates.length === 0}
+          >
+            {snapshotDates.length === 0 ? (
+              <option value="">No snapshots available</option>
+            ) : (
+              snapshotDates.map((snapshotDate) => (
+                <option key={snapshotDate} value={snapshotDate}>
+                  {snapshotDate}
+                </option>
+              ))
+            )}
+          </select>
         </label>
         <label className="flex flex-col gap-1 text-xs text-surface-400">
           <span>Generate start date</span>
