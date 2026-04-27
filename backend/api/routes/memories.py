@@ -18,7 +18,7 @@ GLOBAL_COMMAND_CATEGORY = "global_commands"
 GLOBAL_COMMAND_CATEGORY_ALIASES = {"global_command", "global_commands"}
 GLOBAL_COMMAND_MAX_LENGTH = 800
 CHANNEL_PERSONALITY_CATEGORY = "channel_personality"
-CHANNEL_PERSONALITY_MAX_LENGTH = GLOBAL_COMMAND_MAX_LENGTH
+CHANNEL_PERSONALITY_MAX_LENGTH = 2000
 
 
 def normalize_channel_scope_channel_id(source: str, channel_id: str) -> str:
