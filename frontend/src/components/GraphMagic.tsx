@@ -6,14 +6,19 @@ import { useAuthStore, type UserOrganization } from '../store';
 const MAX_RANGE_DAYS = 30;
 const ROYGBIV = ['#e11d48', '#f97316', '#facc15', '#22c55e', '#3b82f6', '#6366f1', '#a855f7'];
 const GRAPH_SIMULATION = {
-  repulsion: 0.18,
   linkDistance: 3.5,
   linkSpring: 0.7,
+} as const;
+const REPULSION_LEVELS = {
+  weak: 0.18,
+  medium: 0.34,
+  strong: 0.58,
 } as const;
 
 type GraphNode = { id: string; label: string; heat: number; mention_count?: number; source?: string; centrality?: number; color?: string };
 type GraphEdge = { source: string; target: string; weight: number };
 type NodeSizeMode = 'mentions' | 'centrality' | 'composite';
+type RepulsionLevel = keyof typeof REPULSION_LEVELS;
 
 type GraphNodeWithVisuals = GraphNode & {
   mention_count: number;
@@ -52,6 +57,7 @@ export function GraphMagic(): JSX.Element {
   const [error, setError] = useState<string | null>(null);
   const [nodeId, setNodeId] = useState<string | null>(null);
   const [sizeMode, setSizeMode] = useState<NodeSizeMode>('composite');
+  const [repulsionLevel, setRepulsionLevel] = useState<RepulsionLevel>('weak');
   const [snippets, setSnippets] = useState<Array<{ ref: string; snippet: string; event_time: string; source_display?: string }>>([]);
   const [availableOrgs, setAvailableOrgs] = useState<AdminOrganization[]>([]);
 
@@ -240,7 +246,7 @@ export function GraphMagic(): JSX.Element {
 
   return (
     <div className="h-full min-h-0 flex flex-col gap-4">
-      <div className="grid grid-cols-1 md:grid-cols-6 gap-3 items-end">
+      <div className="grid grid-cols-1 md:grid-cols-7 gap-3 items-end">
         <label className="flex flex-col gap-1 text-xs text-surface-400">
           <span>Organization</span>
           <select
@@ -286,13 +292,25 @@ export function GraphMagic(): JSX.Element {
         <label className="flex flex-col gap-1 text-xs text-surface-400">
           <span>Node size mode</span>
           <select
-            className="px-3 py-2 rounded bg-surface-800 text-surface-100"
+            className="w-1/2 min-w-[9rem] px-3 py-2 rounded bg-surface-800 text-surface-100"
             value={sizeMode}
             onChange={(e) => setSizeMode(e.target.value as NodeSizeMode)}
           >
             <option value="composite">Composite importance</option>
             <option value="mentions">Mentions</option>
             <option value="centrality">Centrality</option>
+          </select>
+        </label>
+        <label className="flex flex-col gap-1 text-xs text-surface-400">
+          <span>Node repulsion</span>
+          <select
+            className="w-1/2 min-w-[9rem] px-3 py-2 rounded bg-surface-800 text-surface-100"
+            value={repulsionLevel}
+            onChange={(e) => setRepulsionLevel(e.target.value as RepulsionLevel)}
+          >
+            <option value="weak">Weak</option>
+            <option value="medium">Medium</option>
+            <option value="strong">Strong</option>
           </select>
         </label>
         <div className="flex items-end">
@@ -313,7 +331,7 @@ export function GraphMagic(): JSX.Element {
             nodeSize={(n: GraphNode) => getNodeSize(n as GraphNodeWithVisuals)}
             linkWidth={(link: GraphEdge) => Math.max(1, link.weight)}
             linkColor={(link: GraphEdge) => `rgba(148, 163, 184, ${Math.min(0.85, 0.2 + (link.weight / 8))})`}
-            simulationRepulsion={GRAPH_SIMULATION.repulsion}
+            simulationRepulsion={REPULSION_LEVELS[repulsionLevel]}
             simulationLinkDistance={GRAPH_SIMULATION.linkDistance}
             simulationLinkSpring={GRAPH_SIMULATION.linkSpring}
             fitViewOnInit
