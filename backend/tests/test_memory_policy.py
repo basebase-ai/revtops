@@ -155,8 +155,8 @@ def test_execute_save_memory_commits_and_exits_session_on_save(monkeypatch) -> N
     assert result["status"] == "saved"
 
 
-def test_global_command_limit_allows_800_chars() -> None:
-    long_content = "x" * 800
+def test_global_command_limit_allows_1000_chars() -> None:
+    long_content = "x" * 1000
     memories_api.validate_memory_content(long_content, memories_api.GLOBAL_COMMAND_CATEGORY)
 
 

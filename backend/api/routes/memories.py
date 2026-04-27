@@ -16,9 +16,9 @@ logger = logging.getLogger(__name__)
 
 GLOBAL_COMMAND_CATEGORY = "global_commands"
 GLOBAL_COMMAND_CATEGORY_ALIASES = {"global_command", "global_commands"}
-GLOBAL_COMMAND_MAX_LENGTH = 800
+GLOBAL_COMMAND_MAX_LENGTH = 1000
 CHANNEL_PERSONALITY_CATEGORY = "channel_personality"
-CHANNEL_PERSONALITY_MAX_LENGTH = 2000
+CHANNEL_PERSONALITY_MAX_LENGTH = 1000
 
 
 def normalize_channel_scope_channel_id(source: str, channel_id: str) -> str:

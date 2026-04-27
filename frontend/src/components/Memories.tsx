@@ -18,7 +18,7 @@ interface MemoryDashboardResponse {
 }
 
 const GLOBAL_COMMAND_CATEGORY = 'global_commands';
-const GLOBAL_COMMAND_MAX_LENGTH = 800;
+const GLOBAL_COMMAND_MAX_LENGTH = 1000;
 
 function formatTime(value: string | null): string {
   if (!value) return 'Unknown time';
@@ -180,7 +180,7 @@ export function Memories(): JSX.Element {
           <>
             <div className="rounded-lg border border-primary-700/40 bg-primary-950/20 p-3">
               <div className="text-xs uppercase tracking-wide text-primary-300 mb-2">Global command</div>
-              <p className="text-xs text-surface-400 mb-2">Applied on every message. Maximum 800 characters.</p>
+              <p className="text-xs text-surface-400 mb-2">Applied on every message. Maximum 1000 characters.</p>
               <textarea
                 ref={globalCommandTextareaRef}
                 className="w-full min-h-20 overflow-hidden rounded-lg bg-surface-800 border border-surface-700 px-3 py-2 text-sm text-surface-100"

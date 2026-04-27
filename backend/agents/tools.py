@@ -6180,7 +6180,7 @@ async def execute_keep_notes(
 
 
 GLOBAL_COMMAND_CATEGORY = "global_commands"
-GLOBAL_COMMAND_MAX_LENGTH = 800
+GLOBAL_COMMAND_MAX_LENGTH = 1000
 SUPPORTED_MEMORY_ENTITY_TYPES = {"user", "organization_member"}
 ORG_LEVEL_MEMORY_ERROR = (
     "Org-level memories are not allowed. "
