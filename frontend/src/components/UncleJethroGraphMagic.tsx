@@ -8,6 +8,15 @@ const ROYGBIV = ['#e11d48', '#f97316', '#facc15', '#22c55e', '#3b82f6', '#6366f1
 
 type GraphNode = { id: string; label: string; heat: number; mention_count?: number; source?: string; centrality?: number; color?: string };
 type GraphEdge = { source: string; target: string; weight: number };
+type NodeSizeMode = 'mentions' | 'centrality' | 'composite';
+
+type GraphNodeWithVisuals = GraphNode & {
+  mention_count: number;
+  centrality: number;
+  heat: number;
+  importance_score: number;
+  color: string;
+};
 
 type GraphResponse = {
   organization_id: string;
@@ -30,6 +39,7 @@ export function UncleJethroGraphMagic(): JSX.Element {
   const [graph, setGraph] = useState<GraphResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [nodeId, setNodeId] = useState<string | null>(null);
+  const [sizeMode, setSizeMode] = useState<NodeSizeMode>('composite');
   const [snippets, setSnippets] = useState<Array<{ ref: string; snippet: string; event_time: string; source_display?: string }>>([]);
   const [availableOrgs, setAvailableOrgs] = useState<AdminOrganization[]>([]);
 
@@ -107,18 +117,66 @@ export function UncleJethroGraphMagic(): JSX.Element {
 
   const graphWithVisuals = useMemo(() => {
     if (!graph) return null;
-    const nodes = graph.graph.nodes.map((node) => {
+    const mentionCounts = graph.graph.nodes.map((node) => Math.max(1, Math.round(node.mention_count ?? 1)));
+    const centralities = graph.graph.nodes.map((node) => Math.max(0, node.centrality ?? 0));
+    const heats = graph.graph.nodes.map((node) => Math.max(0, node.heat ?? 0));
+
+    const minMentions = Math.min(...mentionCounts);
+    const maxMentions = Math.max(...mentionCounts);
+    const minCentrality = Math.min(...centralities);
+    const maxCentrality = Math.max(...centralities);
+    const minHeat = Math.min(...heats);
+    const maxHeat = Math.max(...heats);
+
+    const normalize = (value: number, min: number, max: number): number => {
+      const range = max - min;
+      if (range <= 0) return 1;
+      return (value - min) / range;
+    };
+
+    const nodes: GraphNodeWithVisuals[] = graph.graph.nodes.map((node) => {
       const mentionCount = Math.max(1, Math.round(node.mention_count ?? 1));
+      const centrality = Math.max(0, node.centrality ?? 0);
+      const heat = Math.max(0, node.heat ?? 0);
+      const mentionNorm = normalize(mentionCount, minMentions, maxMentions);
+      const centralityNorm = normalize(centrality, minCentrality, maxCentrality);
+      const heatNorm = normalize(heat, minHeat, maxHeat);
+      const importanceScore = (mentionNorm * 0.5) + (centralityNorm * 0.35) + (heatNorm * 0.15);
       return {
         ...node,
         mention_count: mentionCount,
-        color: ROYGBIV[Math.floor(Math.random() * ROYGBIV.length)],
+        centrality,
+        heat,
+        importance_score: importanceScore,
+        color: ROYGBIV[Math.floor(Math.random() * ROYGBIV.length)] ?? '#a855f7',
       };
     });
+
+    console.debug('[UJ Graph Magic] Computed node visuals and importance scores', {
+      nodeCount: nodes.length,
+      sizeMode,
+      minMentions,
+      maxMentions,
+      minCentrality,
+      maxCentrality,
+      minHeat,
+      maxHeat,
+    });
+
     return { ...graph.graph, nodes, edges: graph.graph.edges };
-  }, [graph]);
+  }, [graph, sizeMode]);
 
   const selectedNode = useMemo(() => graphWithVisuals?.nodes.find((n) => n.id === nodeId) ?? null, [graphWithVisuals, nodeId]);
+
+  const getNodeSize = (node: GraphNodeWithVisuals): number => {
+    if (sizeMode === 'mentions') {
+      return Math.max(2.5, Math.sqrt(node.mention_count) * 2);
+    }
+    if (sizeMode === 'centrality') {
+      return Math.max(2.5, 2 + (Math.sqrt(Math.max(0, node.centrality)) * 2));
+    }
+    return Math.max(2.5, 2 + (node.importance_score * 12));
+  };
 
   const onNodeClick = async (id: string): Promise<void> => {
     setNodeId(id);
@@ -131,7 +189,7 @@ export function UncleJethroGraphMagic(): JSX.Element {
   return (
     <div className="h-full min-h-0 flex flex-col gap-4">
       <h2 className="text-xl font-semibold text-surface-50">UJ&apos;s Graph Magic</h2>
-      <div className="grid grid-cols-1 md:grid-cols-5 gap-3 items-end">
+      <div className="grid grid-cols-1 md:grid-cols-6 gap-3 items-end">
         <label className="flex flex-col gap-1 text-xs text-surface-400">
           <span>Organization</span>
           <select
@@ -157,6 +215,18 @@ export function UncleJethroGraphMagic(): JSX.Element {
           <span>Generate end date</span>
           <input type="date" className="px-3 py-2 rounded bg-surface-800" value={endDate} onChange={(e) => setEndDate(e.target.value)} />
         </label>
+        <label className="flex flex-col gap-1 text-xs text-surface-400">
+          <span>Node size mode</span>
+          <select
+            className="px-3 py-2 rounded bg-surface-800 text-surface-100"
+            value={sizeMode}
+            onChange={(e) => setSizeMode(e.target.value as NodeSizeMode)}
+          >
+            <option value="composite">Composite importance</option>
+            <option value="mentions">Mentions</option>
+            <option value="centrality">Centrality</option>
+          </select>
+        </label>
         <div className="flex items-end">
           <button disabled={!canRebuild} onClick={() => void rebuild()} className="w-full md:w-auto px-3 py-2 rounded bg-primary-600 disabled:opacity-40">
             Rebuild
@@ -172,7 +242,7 @@ export function UncleJethroGraphMagic(): JSX.Element {
             links={graphWithVisuals.edges}
             nodeLabelAccessor={(n: GraphNode) => n.label}
             nodeColor={(n: GraphNode) => n.color ?? '#a855f7'}
-            nodeSize={(n: GraphNode) => Math.max(2, Math.sqrt(n.mention_count ?? 1) * 2)}
+            nodeSize={(n: GraphNode) => getNodeSize(n as GraphNodeWithVisuals)}
             linkWidth={(link: GraphEdge) => Math.max(1, link.weight)}
             linkColor={(link: GraphEdge) => `rgba(148, 163, 184, ${Math.min(0.85, 0.2 + (link.weight / 8))})`}
             fitViewOnInit
@@ -195,6 +265,9 @@ export function UncleJethroGraphMagic(): JSX.Element {
               <div>Source (oldest mention): <span className="text-surface-200">{selectedNode.source ?? 'Unknown'}</span></div>
               <div>Mentions: <span className="text-surface-200">{selectedNode.mention_count ?? 0}</span></div>
               <div>Centrality (edges): <span className="text-surface-200">{selectedNode.centrality ?? 0}</span></div>
+              <div>Heat: <span className="text-surface-200">{selectedNode.heat ?? 0}</span></div>
+              <div>Importance score: <span className="text-surface-200">{(selectedNode.importance_score ?? 0).toFixed(3)}</span></div>
+              <div>Breakdown: <span className="text-surface-200">mentions 50% · centrality 35% · heat 15%</span></div>
             </div>
           )}
           <ul className="space-y-2">
