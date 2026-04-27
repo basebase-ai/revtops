@@ -163,6 +163,21 @@ def _is_private_memory_context(*, source: str | None, scope: str | None, normali
     return False
 
 
+
+
+def _workflow_target_is_slack_dm(workflow_context: dict[str, Any] | None) -> bool:
+    """Return True when workflow context targets a Slack DM channel."""
+    if not workflow_context:
+        return False
+    if not bool(workflow_context.get("is_workflow")):
+        return False
+
+    slack_channel_id = str(workflow_context.get("slack_channel_id") or "").strip()
+    if not slack_channel_id:
+        return False
+
+    normalized_channel_id = _normalize_channel_scope_id("slack", slack_channel_id)
+    return bool(normalized_channel_id and normalized_channel_id.startswith("D"))
 def _should_include_cross_conversation_history(user_message: str) -> bool:
     """Return True when a user explicitly asks for cross-conversation context."""
     if not user_message:
@@ -807,6 +822,17 @@ class ChatOrchestrator:
                             scope=conversation_scope,
                             normalized_channel_id=normalized_channel_id,
                         )
+                workflow_slack_channel_id: str | None = _normalize_channel_scope_id(
+                    "slack",
+                    str((self.workflow_context or {}).get("slack_channel_id") or ""),
+                )
+                if workflow_slack_channel_id:
+                    if not normalized_channel_id:
+                        normalized_channel_id = workflow_slack_channel_id
+                    if not conversation_source:
+                        conversation_source = "slack"
+                    if workflow_slack_channel_id.startswith("D"):
+                        profile["is_private_memory_context"] = True
 
                 user_uuid: UUID | None = self._resolve_current_user_uuid()
                 org_uuid: UUID = UUID(self.organization_id)  # type: ignore[arg-type]
@@ -1295,10 +1321,29 @@ class ChatOrchestrator:
             global_command_memory: dict[str, str] | None = profile.get("global_command_memory")
             channel_personality_memory: dict[str, str] | None = profile.get("channel_personality_memory")
             is_private_memory_context: bool = bool(profile.get("is_private_memory_context"))
+            workflow_target_is_dm: bool = _workflow_target_is_slack_dm(self.workflow_context)
+            include_user_profile_context: bool = not is_workflow_run or workflow_target_is_dm
+            if is_workflow_run and not include_user_profile_context:
+                logger.info(
+                    "[Orchestrator] Skipping user profile memories for workflow conversation_id=%s workflow_id=%s slack_channel_id=%s",
+                    self.conversation_id,
+                    (self.workflow_context or {}).get("workflow_id"),
+                    (self.workflow_context or {}).get("slack_channel_id"),
+                )
 
             has_any_context: bool = bool(
-                user_memories or job_memories or global_command_memory or channel_personality_memory
-                or membership_title or reports_to_name or phone_number
+                channel_personality_memory
+                or (
+                    include_user_profile_context
+                    and (
+                        user_memories
+                        or job_memories
+                        or global_command_memory
+                        or membership_title
+                        or reports_to_name
+                        or phone_number
+                    )
+                )
             )
 
             if has_any_context:
@@ -1306,7 +1351,7 @@ class ChatOrchestrator:
                 system_prompt += "\nThese are persisted facts about the user and their role."
                 system_prompt += " Follow preferences. Use manage_memory with action=\"update\" or action=\"delete\" and the [memory_id] shown in brackets to manage entries.\n"
 
-            if global_command_memory and is_private_memory_context:
+            if global_command_memory and is_private_memory_context and include_user_profile_context:
                 system_prompt += "\n## Global Command (Always Apply)\n"
                 system_prompt += f"- [{global_command_memory['id']}] {global_command_memory['content']}\n"
                 logger.info(
@@ -1326,7 +1371,7 @@ class ChatOrchestrator:
                 )
 
             # -- User profile section --
-            if user_memories or phone_number:
+            if include_user_profile_context and (user_memories or phone_number):
                 system_prompt += "\n## Your Profile\n"
                 if self.user_name:
                     system_prompt += f"- Name: {self.user_name}\n"
@@ -1336,7 +1381,7 @@ class ChatOrchestrator:
                     system_prompt += f"- [{mem['id']}] {mem['content']}\n"
 
             # -- Job / role profile section --
-            if membership_title or reports_to_name or job_memories:
+            if include_user_profile_context and (membership_title or reports_to_name or job_memories):
                 org_label_job: str = f" at {self.organization_name}" if self.organization_name else ""
                 system_prompt += f"\n## Your Role{org_label_job}\n"
                 if membership_title:
@@ -1347,7 +1392,7 @@ class ChatOrchestrator:
                     system_prompt += f"- [{mem['id']}] {mem['content']}\n"
 
 
-            if participant_job_memories:
+            if include_user_profile_context and participant_job_memories:
                 system_prompt += "\n## Team Role Context (Conversation Participants)\n"
                 system_prompt += "Role memories from org_members for all users participating in this conversation:\n"
                 for participant in participant_job_memories:
@@ -1363,7 +1408,7 @@ class ChatOrchestrator:
 
             # -- Profile completeness signal (guides context-gathering behaviour) --
             is_private: bool = is_private_memory_context
-            if is_private:
+            if include_user_profile_context and is_private:
                 completeness_parts: list[str] = []
 
                 user_count: int = len(user_memories)
