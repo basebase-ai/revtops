@@ -129,7 +129,7 @@ export function UncleJethroGraphMagic(): JSX.Element {
   };
 
   return (
-    <div className="h-full min-h-[70vh] flex flex-col gap-4">
+    <div className="h-full min-h-0 flex flex-col gap-4">
       <h2 className="text-xl font-semibold text-surface-50">UJ&apos;s Graph Magic</h2>
       <div className="grid grid-cols-1 md:grid-cols-5 gap-3 items-end">
         <label className="flex flex-col gap-1 text-xs text-surface-400">
@@ -165,14 +165,14 @@ export function UncleJethroGraphMagic(): JSX.Element {
       </div>
       {partialWarning && <p className="text-xs text-amber-400">Partial data: some sources failed</p>}
       {error && <p className="text-sm text-red-400">{error}</p>}
-      <div className="bg-surface-900 border border-surface-800 rounded-lg p-3 flex-1 min-h-[560px] relative">
+      <div className="bg-surface-900 border border-surface-800 rounded-lg p-3 flex-1 min-h-[75vh] relative">
         {graphWithVisuals ? (
           <Cosmograph
             nodes={graphWithVisuals.nodes}
             links={graphWithVisuals.edges}
             nodeLabelAccessor={(n: GraphNode) => n.label}
             nodeColor={(n: GraphNode) => n.color ?? '#a855f7'}
-            nodeSize={(n: GraphNode) => Math.max(2, n.mention_count ?? 1)}
+            nodeSize={(n: GraphNode) => Math.max(2, Math.sqrt(n.mention_count ?? 1) * 2)}
             linkWidth={(link: GraphEdge) => Math.max(1, link.weight)}
             linkColor={(link: GraphEdge) => `rgba(148, 163, 184, ${Math.min(0.85, 0.2 + (link.weight / 8))})`}
             fitViewOnInit

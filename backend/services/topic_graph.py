@@ -22,12 +22,14 @@ from models.conversation import Conversation
 from models.database import get_admin_session
 from models.organization import Organization
 from models.topic_graph_snapshot import TopicGraphSnapshot
+from services.common_english_words import COMMON_ENGLISH_WORDS
 
 logger = logging.getLogger(__name__)
 
 PARTIAL_WARNING = "Partial data: some sources failed"
 _TOKEN_RE = re.compile(r"\b[A-Za-z][A-Za-z0-9_\-]{2,}\b")
 _STOP = {"the", "and", "for", "with", "this", "that", "from", "you", "your", "are", "was"}
+_MIN_NODE_MENTIONS = 2
 
 _SOURCE_FRIENDLY_NAMES: dict[str, str] = {
     "slack": "Slack",
@@ -85,7 +87,7 @@ def _tokenize(text: str) -> list[str]:
     out: list[str] = []
     for m in _TOKEN_RE.finditer(text):
         token = m.group(0).lower()
-        if token in _STOP:
+        if token in _STOP or token in COMMON_ENGLISH_WORDS:
             continue
         out.append(token)
     return out
@@ -321,6 +323,17 @@ async def generate_topic_graph_for_org_day(org_id: str, graph_date: date) -> dic
         merged_mentions.setdefault(cnode, 0)
         now = datetime.now(timezone.utc)
         merged_newest.setdefault(cnode, now)
+
+    pruned_nodes = {
+        node
+        for node, mention_count in merged_mentions.items()
+        if int(mention_count) < _MIN_NODE_MENTIONS
+    }
+    for node in pruned_nodes:
+        merged_docs.pop(node, None)
+        merged_newest.pop(node, None)
+        merged_mentions.pop(node, None)
+        merged_evidence.pop(node, None)
 
     edge_weights: dict[tuple[str, str], float] = defaultdict(float)
     doc_to_nodes: dict[str, set[str]] = defaultdict(set)
