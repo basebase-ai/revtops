@@ -21,13 +21,38 @@ class RebuildRequest(BaseModel):
     end_date: str | None = None
 
 
+def _parse_graph_date(graph_date: str) -> date:
+    try:
+        return date.fromisoformat(graph_date)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="graph_date must be YYYY-MM-DD") from exc
+
+
+@router.get("/{organization_id}/dates")
+async def get_graph_snapshot_dates(
+    organization_id: str,
+    auth: AuthContext = Depends(require_global_admin),
+) -> dict[str, Any]:
+    dates = await list_topic_graph_snapshot_dates(organization_id)
+    logger.info(
+        "topic_graph.stage=list_dates org_id=%s date_count=%d by=%s",
+        organization_id,
+        len(dates),
+        auth.user_id,
+    )
+    return {
+        "organization_id": organization_id,
+        "dates": [d.isoformat() for d in dates],
+    }
+
+
 @router.get("/{organization_id}/{graph_date}")
 async def get_graph_snapshot(
     organization_id: str,
     graph_date: str,
     auth: AuthContext = Depends(require_global_admin),
 ) -> dict[str, Any]:
-    d = date.fromisoformat(graph_date)
+    d = _parse_graph_date(graph_date)
     snapshot = await get_topic_graph_snapshot(organization_id, d)
     if snapshot is None:
         raise HTTPException(status_code=404, detail="Graph snapshot not found")
@@ -47,31 +72,13 @@ async def get_graph_node_evidence(
     node_id: str,
     auth: AuthContext = Depends(require_global_admin),
 ) -> dict[str, Any]:
-    d = date.fromisoformat(graph_date)
+    d = _parse_graph_date(graph_date)
     snippets = await get_node_evidence(organization_id, d, node_id)
     return {
         "organization_id": organization_id,
         "graph_date": d.isoformat(),
         "node_id": node_id,
         "snippets": snippets,
-    }
-
-
-@router.get("/{organization_id}/dates")
-async def get_graph_snapshot_dates(
-    organization_id: str,
-    auth: AuthContext = Depends(require_global_admin),
-) -> dict[str, Any]:
-    dates = await list_topic_graph_snapshot_dates(organization_id)
-    logger.info(
-        "topic_graph.stage=list_dates org_id=%s date_count=%d by=%s",
-        organization_id,
-        len(dates),
-        auth.user_id,
-    )
-    return {
-        "organization_id": organization_id,
-        "dates": [d.isoformat() for d in dates],
     }
 
 
