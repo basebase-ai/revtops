@@ -46,16 +46,18 @@ export function UncleJethroGraphMagic(): JSX.Element {
         });
         const fallbackOrgs: AdminOrganization[] = orgMemberships.map((org) => ({ id: org.id, name: org.name }));
         setAvailableOrgs(fallbackOrgs);
-        if (!orgId && fallbackOrgs.length > 0) {
-          setOrgId(fallbackOrgs[0].id);
+        const firstFallbackOrg = fallbackOrgs[0];
+        if (!orgId && firstFallbackOrg) {
+          setOrgId(firstFallbackOrg.id);
         }
         return;
       }
 
       const sortedOrgs: AdminOrganization[] = [...data.organizations].sort((a, b) => a.name.localeCompare(b.name));
       setAvailableOrgs(sortedOrgs);
-      if (!orgId && sortedOrgs.length > 0) {
-        setOrgId(sortedOrgs[0].id);
+      const firstSortedOrg = sortedOrgs[0];
+      if (!orgId && firstSortedOrg) {
+        setOrgId(firstSortedOrg.id);
       }
     };
 
