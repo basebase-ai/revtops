@@ -1068,7 +1068,9 @@ function WorkflowModal({
                   >
                     <option value="">Default workflow model</option>
                     {Object.entries(llmModelMap).map(([model, provider]) => (
-                      <option key={model} value={model}>{formatModelNameForUi(model)} ({provider})</option>
+                      <option key={model} value={model}>
+                        {provider ? `${formatModelNameForUi(model)} (${provider})` : formatModelNameForUi(model)}
+                      </option>
                     ))}
                   </select>
                   <p className="text-xs text-surface-500 mt-1">

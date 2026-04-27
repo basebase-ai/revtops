@@ -77,6 +77,8 @@ async def resolve_llm_config(
         inferred_model: str | None = primary_model or cheap_model
         if inferred_model:
             inferred: str | None = provider_for_model(inferred_model)
+            if not inferred:
+                inferred = _infer_provider_from_model_name(inferred_model)
             if inferred:
                 provider = inferred  # type: ignore[assignment]
 

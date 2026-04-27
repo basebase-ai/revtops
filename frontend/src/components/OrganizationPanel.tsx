@@ -1566,7 +1566,9 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
                         >
                           <option value="">Default</option>
                           {Object.entries(llmModelMap).map(([model, provider]) => (
-                            <option key={model} value={model}>{formatModelNameForUi(model)} ({provider})</option>
+                            <option key={model} value={model}>
+                              {provider ? `${formatModelNameForUi(model)} (${provider})` : formatModelNameForUi(model)}
+                            </option>
                           ))}
                         </select>
                         <p className="text-xs text-surface-500 mt-1">Leave blank for provider default</p>
@@ -1580,7 +1582,9 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
                         >
                           <option value="">Default</option>
                           {Object.entries(llmModelMap).map(([model, provider]) => (
-                            <option key={model} value={model}>{formatModelNameForUi(model)} ({provider})</option>
+                            <option key={model} value={model}>
+                              {provider ? `${formatModelNameForUi(model)} (${provider})` : formatModelNameForUi(model)}
+                            </option>
                           ))}
                         </select>
                         <p className="text-xs text-surface-500 mt-1">Used for summaries, titles, and background tasks</p>
@@ -1599,7 +1603,9 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
                         >
                           <option value="">Default</option>
                           {Object.entries(llmModelMap).map(([model, provider]) => (
-                            <option key={model} value={model}>{formatModelNameForUi(model)} ({provider})</option>
+                            <option key={model} value={model}>
+                              {provider ? `${formatModelNameForUi(model)} (${provider})` : formatModelNameForUi(model)}
+                            </option>
                           ))}
                         </select>
                         <p className="text-xs text-surface-500 mt-1">Used only for workflow runs; regular chat turns keep using your primary model</p>
