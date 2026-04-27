@@ -360,7 +360,7 @@ export function GraphMagic(): JSX.Element {
               aria-label="Close node details"
               onClick={closeNodeDetails}
             />
-            <div className="absolute inset-x-3 top-3 md:left-1/2 md:right-auto md:w-[min(820px,calc(100%-1.5rem))] md:-translate-x-1/2 z-10 bg-surface-900 border border-surface-700 rounded-lg p-3 shadow-2xl max-h-[70vh] overflow-y-auto">
+            <div className="absolute left-3 top-3 w-[calc(100%-1.5rem)] md:w-[min(738px,calc((100%-1.5rem)*0.9))] z-10 bg-surface-900 border border-surface-700 rounded-lg p-3 shadow-2xl max-h-[70vh] overflow-y-auto">
               <div className="flex items-start justify-between gap-3 mb-2">
                 <h3 className="font-medium">Node details: {nodeId}</h3>
                 <button
