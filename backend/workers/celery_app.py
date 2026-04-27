@@ -168,7 +168,7 @@ if _ENABLE_BEAT:
             "Nightly topic graph schedule disabled: ENABLE_NIGHTLY_TOPIC_GRAPH env var is required and was not set"
         )
     elif nightly_topic_graph_flag.lower() in ("true", "1", "yes"):
-        celery_app.conf.beat_schedule["uncle-jethro-graph-magic-nightly"] = {
+        celery_app.conf.beat_schedule["graph-magic-nightly"] = {
             "task": "workers.tasks.topic_graph.generate_daily_all_orgs",
             "schedule": crontab(minute=0, hour=9),
         }
