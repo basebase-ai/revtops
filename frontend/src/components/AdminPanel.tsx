@@ -12,7 +12,7 @@ import ReactMarkdown from 'react-markdown';
 import { API_BASE, apiRequest, getAuthenticatedRequestHeaders } from '../lib/api';
 import { useDeleteOrganization } from '../hooks';
 import { useAppStore, useAuthStore, useChatStore, type UserProfile, type OrganizationInfo } from '../store';
-import { UncleJethroGraphMagic } from './UncleJethroGraphMagic';
+import { GraphMagic } from './GraphMagic';
 
 // ─── Dashboard types ─────────────────────────────────────────────────────────
 
@@ -2608,7 +2608,7 @@ export function AdminPanel(): JSX.Element {
         )}
 
         {activeTab === 'graph-magic' && (
-          <UncleJethroGraphMagic />
+          <GraphMagic />
         )}
 
         {activeTab === 'jobs' && (

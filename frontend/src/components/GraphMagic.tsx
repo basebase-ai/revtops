@@ -21,7 +21,7 @@ type AdminOrganization = {
   name: string;
 };
 
-export function UncleJethroGraphMagic(): JSX.Element {
+export function GraphMagic(): JSX.Element {
   const orgMemberships: UserOrganization[] = useAuthStore((state) => state.organizations);
   const [orgId, setOrgId] = useState('');
   const [startDate, setStartDate] = useState(new Date().toISOString().slice(0, 10));
@@ -41,7 +41,7 @@ export function UncleJethroGraphMagic(): JSX.Element {
         '/waitlist/admin/organizations?limit=1000',
       );
       if (requestError || !data?.organizations?.length) {
-        console.debug('[UJ Graph Magic] Falling back to org memberships for org dropdown', {
+        console.debug('[Graph Magic] Falling back to org memberships for org dropdown', {
           requestError,
           membershipCount: orgMemberships.length,
         });
@@ -75,7 +75,7 @@ export function UncleJethroGraphMagic(): JSX.Element {
 
   const fetchGraph = async (): Promise<void> => {
     if (!orgId) return;
-    console.debug('[UJ Graph Magic] Fetching graph snapshot', { orgId, selectedDate });
+    console.debug('[Graph Magic] Fetching graph snapshot', { orgId, selectedDate });
     const { data, error: reqErr } = await apiRequest<GraphResponse>(`/admin-topic-graph/${orgId}/${selectedDate}`);
     if (reqErr || !data) {
       setError(reqErr ?? 'Failed to load graph');
@@ -92,7 +92,7 @@ export function UncleJethroGraphMagic(): JSX.Element {
 
   const rebuild = async (): Promise<void> => {
     if (!canRebuild) return;
-    console.debug('[UJ Graph Magic] Rebuilding graphs for range', { orgId, startDate, endDate });
+    console.debug('[Graph Magic] Rebuilding graphs for range', { orgId, startDate, endDate });
     const { error: reqErr } = await apiRequest('/admin-topic-graph/rebuild', {
       method: 'POST',
       body: JSON.stringify({ organization_id: orgId, start_date: startDate, end_date: endDate }),
@@ -130,7 +130,7 @@ export function UncleJethroGraphMagic(): JSX.Element {
 
   return (
     <div className="h-full min-h-0 flex flex-col gap-4">
-      <h2 className="text-xl font-semibold text-surface-50">UJ&apos;s Graph Magic</h2>
+      <h2 className="text-xl font-semibold text-surface-50">Graph Magic</h2>
       <div className="grid grid-cols-1 md:grid-cols-5 gap-3 items-end">
         <label className="flex flex-col gap-1 text-xs text-surface-400">
           <span>Organization</span>
