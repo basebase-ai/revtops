@@ -431,6 +431,16 @@ async def get_topic_graph_snapshot(org_id: str, graph_date: date) -> TopicGraphS
         return row.scalar_one_or_none()
 
 
+async def list_topic_graph_snapshot_dates(org_id: str) -> list[date]:
+    async with get_admin_session() as session:
+        rows = await session.execute(
+            select(TopicGraphSnapshot.graph_date)
+            .where(TopicGraphSnapshot.organization_id == UUID(org_id))
+            .order_by(TopicGraphSnapshot.graph_date.desc())
+        )
+        return [r[0] for r in rows.all()]
+
+
 def _rank_evidence(evidence_rows: list[dict[str, Any]], node_id: str) -> list[dict[str, Any]]:
     dedup: dict[str, dict[str, Any]] = {}
     for row in evidence_rows:
