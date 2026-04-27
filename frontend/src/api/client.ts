@@ -98,6 +98,16 @@ export interface ChatHistoryResponse {
   messages: ChatMessage[];
 }
 
+export interface ChannelMemoryPayload {
+  id: string;
+  entity_type: string;
+  category: string | null;
+  content: string;
+  created_by_user_id: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
 // =============================================================================
 // Integration Types
 // =============================================================================
@@ -213,6 +223,45 @@ export async function createConversation(
     method: "POST",
     body: JSON.stringify({ title }),
   });
+}
+
+export async function getChannelPersonalityMemory(
+  organizationId: string,
+  source: string,
+  channelId: string,
+): Promise<ApiResponse<ChannelMemoryPayload | null>> {
+  const params = new URLSearchParams({ source, channel_id: channelId });
+  return apiRequest<ChannelMemoryPayload | null>(
+    `/memories/${organizationId}/channel?${params.toString()}`,
+  );
+}
+
+export async function upsertChannelPersonalityMemory(
+  organizationId: string,
+  source: string,
+  channelId: string,
+  content: string,
+): Promise<ApiResponse<ChannelMemoryPayload>> {
+  const params = new URLSearchParams({ source, channel_id: channelId });
+  return apiRequest<ChannelMemoryPayload>(
+    `/memories/${organizationId}/channel?${params.toString()}`,
+    {
+      method: "PUT",
+      body: JSON.stringify({ content }),
+    },
+  );
+}
+
+export async function deleteChannelPersonalityMemory(
+  organizationId: string,
+  source: string,
+  channelId: string,
+): Promise<ApiResponse<{ status: string; memory_id: string }>> {
+  const params = new URLSearchParams({ source, channel_id: channelId });
+  return apiRequest<{ status: string; memory_id: string }>(
+    `/memories/${organizationId}/channel?${params.toString()}`,
+    { method: "DELETE" },
+  );
 }
 
 /**
