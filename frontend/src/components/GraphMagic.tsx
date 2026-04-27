@@ -188,54 +188,56 @@ export function GraphMagic(): JSX.Element {
 
   return (
     <div className="h-full min-h-0 flex flex-col gap-4">
-      <h2 className="text-xl font-semibold text-surface-50">Graph Magic</h2>
-      <div className="grid grid-cols-1 md:grid-cols-6 gap-3 items-end">
-        <label className="flex flex-col gap-1 text-xs text-surface-400">
-          <span>Organization</span>
-          <select
-            className="px-3 py-2 rounded bg-surface-800 text-surface-100"
-            value={orgId}
-            onChange={(e) => setOrgId(e.target.value)}
-          >
-            {availableOrgs.length === 0 && <option value="">No organizations available</option>}
-            {availableOrgs.map((org) => (
-              <option key={org.id} value={org.id}>{org.name}</option>
-            ))}
-          </select>
-        </label>
-        <label className="flex flex-col gap-1 text-xs text-surface-400">
-          <span>Selected date (graph view)</span>
-          <input type="date" className="px-3 py-2 rounded bg-surface-800" value={selectedDate} onChange={(e) => setSelectedDate(e.target.value)} />
-        </label>
-        <label className="flex flex-col gap-1 text-xs text-surface-400">
-          <span>Generate start date</span>
-          <input type="date" className="px-3 py-2 rounded bg-surface-800" value={startDate} onChange={(e) => setStartDate(e.target.value)} />
-        </label>
-        <label className="flex flex-col gap-1 text-xs text-surface-400">
-          <span>Generate end date</span>
-          <input type="date" className="px-3 py-2 rounded bg-surface-800" value={endDate} onChange={(e) => setEndDate(e.target.value)} />
-        </label>
-        <label className="flex flex-col gap-1 text-xs text-surface-400">
-          <span>Node size mode</span>
-          <select
-            className="px-3 py-2 rounded bg-surface-800 text-surface-100"
-            value={sizeMode}
-            onChange={(e) => setSizeMode(e.target.value as NodeSizeMode)}
-          >
-            <option value="composite">Composite importance</option>
-            <option value="mentions">Mentions</option>
-            <option value="centrality">Centrality</option>
-          </select>
-        </label>
-        <div className="flex items-end">
-          <button disabled={!canRebuild} onClick={() => void rebuild()} className="w-full md:w-auto px-3 py-2 rounded bg-primary-600 disabled:opacity-40">
-            Rebuild
-          </button>
+      <div className="flex flex-col xl:flex-row xl:items-end gap-3 xl:gap-4">
+        <h2 className="text-xl font-semibold text-surface-50 whitespace-nowrap">UJ&apos;s Graph Magic</h2>
+        <div className="grid grid-cols-1 md:grid-cols-6 gap-3 items-end flex-1">
+          <label className="flex flex-col gap-1 text-xs text-surface-400">
+            <span>Organization</span>
+            <select
+              className="px-3 py-2 rounded bg-surface-800 text-surface-100"
+              value={orgId}
+              onChange={(e) => setOrgId(e.target.value)}
+            >
+              {availableOrgs.length === 0 && <option value="">No organizations available</option>}
+              {availableOrgs.map((org) => (
+                <option key={org.id} value={org.id}>{org.name}</option>
+              ))}
+            </select>
+          </label>
+          <label className="flex flex-col gap-1 text-xs text-surface-400">
+            <span>Selected date (graph view)</span>
+            <input type="date" className="px-3 py-2 rounded bg-surface-800" value={selectedDate} onChange={(e) => setSelectedDate(e.target.value)} />
+          </label>
+          <label className="flex flex-col gap-1 text-xs text-surface-400">
+            <span>Generate start date</span>
+            <input type="date" className="px-3 py-2 rounded bg-surface-800" value={startDate} onChange={(e) => setStartDate(e.target.value)} />
+          </label>
+          <label className="flex flex-col gap-1 text-xs text-surface-400">
+            <span>Generate end date</span>
+            <input type="date" className="px-3 py-2 rounded bg-surface-800" value={endDate} onChange={(e) => setEndDate(e.target.value)} />
+          </label>
+          <label className="flex flex-col gap-1 text-xs text-surface-400">
+            <span>Node size mode</span>
+            <select
+              className="px-3 py-2 rounded bg-surface-800 text-surface-100"
+              value={sizeMode}
+              onChange={(e) => setSizeMode(e.target.value as NodeSizeMode)}
+            >
+              <option value="composite">Composite importance</option>
+              <option value="mentions">Mentions</option>
+              <option value="centrality">Centrality</option>
+            </select>
+          </label>
+          <div className="flex items-end">
+            <button disabled={!canRebuild} onClick={() => void rebuild()} className="w-full md:w-auto px-3 py-2 rounded bg-primary-600 disabled:opacity-40">
+              Rebuild
+            </button>
+          </div>
         </div>
       </div>
       {partialWarning && <p className="text-xs text-amber-400">Partial data: some sources failed</p>}
       {error && <p className="text-sm text-red-400">{error}</p>}
-      <div className="bg-surface-900 border border-surface-800 rounded-lg p-3 flex-1 min-h-[75vh] relative">
+      <div className="bg-surface-900 border border-surface-800 rounded-lg p-3 flex-1 min-h-[68vh] relative">
         {graphWithVisuals ? (
           <Cosmograph
             nodes={graphWithVisuals.nodes}
