@@ -13,6 +13,7 @@ import { useState, useEffect, useRef, useMemo, useCallback, type KeyboardEvent }
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useAppStore } from '../store';
 import { apiRequest } from '../lib/api';
+import { formatModelNameForUi } from '../lib/modelDisplay';
 import { useTeamMembers } from '../hooks/useOrganization';
 import { GallerySearchInput } from './shared/GallerySearchInput';
 import { useViewMode } from '../hooks/useViewMode';
@@ -1067,7 +1068,7 @@ function WorkflowModal({
                   >
                     <option value="">Default workflow model</option>
                     {Object.entries(llmModelMap).map(([model, provider]) => (
-                      <option key={model} value={model}>{model} ({provider})</option>
+                      <option key={model} value={model}>{formatModelNameForUi(model)} ({provider})</option>
                     ))}
                   </select>
                   <p className="text-xs text-surface-500 mt-1">

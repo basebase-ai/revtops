@@ -18,6 +18,7 @@ import { useAppStore } from '../store';
 import { useTeamMembers, useUpdateOrganization, useLinkIdentity, useUnlinkIdentity, useUpdateGuestUser, useUpdateMemberRole, useDeleteMember, useDeleteOrganization, organizationKeys } from '../hooks';
 import type { TeamMember, IdentityMapping } from '../hooks';
 import { apiRequest } from '../lib/api';
+import { formatModelNameForUi } from '../lib/modelDisplay';
 import { Avatar } from './Avatar';
 import { SubscriptionSetup } from './SubscriptionSetup';
 
@@ -126,7 +127,7 @@ interface OrganizationPanelProps {
 const MODEL_FAMILY_DEFAULTS: Record<string, { primary: string; fast: string }> = {
   anthropic: { primary: 'claude-opus-4-6', fast: 'claude-haiku-4-5-20251001' },
   minimax: { primary: 'MiniMax-M2.7', fast: 'MiniMax-M2.7-highspeed' },
-  openai: { primary: 'gpt5.5', fast: 'gpt5.5-mini' },
+  openai: { primary: 'gpt-5.5', fast: 'gpt-5.5-mini' },
   gemini: { primary: 'gemini-2.5-pro', fast: 'gemini-2.5-flash' },
 };
 
@@ -733,7 +734,7 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
       const primaryFamily = inferModelFamily(nextPrimary);
       if (selectedCheapFamily && primaryFamily && selectedCheapFamily !== primaryFamily) {
         nextPrimary = resolveFamilyDefaultModel(selectedCheapFamily, 'primary');
-        warningMessage = `Fast model family changed to ${selectedCheapFamily}, so primary model was reset to that family default (${nextPrimary || 'default'}).`;
+        warningMessage = `Fast model family changed to ${selectedCheapFamily}, so primary model was reset to that family default (${nextPrimary ? formatModelNameForUi(nextPrimary) : 'default'}).`;
       }
     }
 
@@ -742,7 +743,7 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
       const cheapFamily = inferModelFamily(nextCheap);
       if (selectedPrimaryFamily && cheapFamily && selectedPrimaryFamily !== cheapFamily) {
         nextCheap = resolveFamilyDefaultModel(selectedPrimaryFamily, 'fast');
-        warningMessage = `Primary model family changed to ${selectedPrimaryFamily}, so fast model was reset to that family default (${nextCheap || 'default'}).`;
+        warningMessage = `Primary model family changed to ${selectedPrimaryFamily}, so fast model was reset to that family default (${nextCheap ? formatModelNameForUi(nextCheap) : 'default'}).`;
       }
     }
 
@@ -1557,7 +1558,7 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
                         >
                           <option value="">Default</option>
                           {Object.entries(llmModelMap).map(([model, provider]) => (
-                            <option key={model} value={model}>{model} ({provider})</option>
+                            <option key={model} value={model}>{formatModelNameForUi(model)} ({provider})</option>
                           ))}
                         </select>
                         <p className="text-xs text-surface-500 mt-1">Leave blank for provider default</p>
@@ -1571,7 +1572,7 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
                         >
                           <option value="">Default</option>
                           {Object.entries(llmModelMap).map(([model, provider]) => (
-                            <option key={model} value={model}>{model} ({provider})</option>
+                            <option key={model} value={model}>{formatModelNameForUi(model)} ({provider})</option>
                           ))}
                         </select>
                         <p className="text-xs text-surface-500 mt-1">Used for summaries, titles, and background tasks</p>
@@ -1590,7 +1591,7 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
                         >
                           <option value="">Default</option>
                           {Object.entries(llmModelMap).map(([model, provider]) => (
-                            <option key={model} value={model}>{model} ({provider})</option>
+                            <option key={model} value={model}>{formatModelNameForUi(model)} ({provider})</option>
                           ))}
                         </select>
                         <p className="text-xs text-surface-500 mt-1">Used only for workflow runs; regular chat turns keep using your primary model</p>
