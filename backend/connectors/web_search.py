@@ -39,7 +39,6 @@ OPENAI_WEB_RESEARCH_FALLBACK_MODELS: tuple[str, ...] = tuple(
             "gpt-5.5",
             "gpt-5",
             "gpt-5.5-mini",
-            "gpt-5.5-nano",
         )
     )
 )
