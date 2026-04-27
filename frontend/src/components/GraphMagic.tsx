@@ -5,6 +5,11 @@ import { useAuthStore, type UserOrganization } from '../store';
 
 const MAX_RANGE_DAYS = 30;
 const ROYGBIV = ['#e11d48', '#f97316', '#facc15', '#22c55e', '#3b82f6', '#6366f1', '#a855f7'];
+const GRAPH_SIMULATION = {
+  repulsion: 0.18,
+  linkDistance: 3.5,
+  linkSpring: 0.7,
+} as const;
 
 type GraphNode = { id: string; label: string; heat: number; mention_count?: number; source?: string; centrality?: number; color?: string };
 type GraphEdge = { source: string; target: string; weight: number };
@@ -201,6 +206,7 @@ export function GraphMagic(): JSX.Element {
       maxCentrality,
       minHeat,
       maxHeat,
+      simulation: GRAPH_SIMULATION,
     });
 
     return { ...graph.graph, nodes, edges: graph.graph.edges };
@@ -300,6 +306,9 @@ export function GraphMagic(): JSX.Element {
             nodeSize={(n: GraphNode) => getNodeSize(n as GraphNodeWithVisuals)}
             linkWidth={(link: GraphEdge) => Math.max(1, link.weight)}
             linkColor={(link: GraphEdge) => `rgba(148, 163, 184, ${Math.min(0.85, 0.2 + (link.weight / 8))})`}
+            simulationRepulsion={GRAPH_SIMULATION.repulsion}
+            simulationLinkDistance={GRAPH_SIMULATION.linkDistance}
+            simulationLinkSpring={GRAPH_SIMULATION.linkSpring}
             fitViewOnInit
             className="h-full w-full"
             onClick={(clickedNode: GraphNode | undefined) => {
