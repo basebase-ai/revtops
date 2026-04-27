@@ -407,9 +407,9 @@ class OpenAIAdapter:
 
     def _build_token_limit_kwargs(self, *, model: str, max_tokens: int) -> dict[str, int]:
         """Map token limit parameter name based on OpenAI model requirements."""
-        # Newer reasoning families (e.g. gpt-5.5 / o-series) reject `max_tokens`.
+        # Newer reasoning families (e.g. gpt-5 / gpt-5.5 / o-series) reject `max_tokens`.
         normalized_model: str = model.strip().lower().split("/")[-1]
-        uses_completion_tokens: bool = normalized_model.startswith(("gpt-5.5", "o"))
+        uses_completion_tokens: bool = normalized_model.startswith(("gpt-5", "gpt5", "o"))
         token_param_name: str = (
             "max_completion_tokens" if uses_completion_tokens else "max_tokens"
         )
@@ -433,16 +433,18 @@ class OpenAIAdapter:
             prefix, base_model = normalized_model.split("/", 1)
             prefix = f"{prefix}/"
 
-        if not base_model.startswith("gpt-5"):
+        if not base_model.startswith(("gpt-5", "gpt5")):
             return []
 
+        canonical_base_model: str = base_model.replace("gpt5", "gpt-5", 1) if base_model.startswith("gpt5") else base_model
+
         variants: list[str] = []
-        if base_model == "gpt-5":
-            variants.extend(["gpt-5.5", "gpt-5.5-mini", "gpt-5.5-nano"])
-        elif base_model == "gpt-5.5":
+        if canonical_base_model == "gpt-5.5":
             variants.extend(["gpt-5", "gpt-5.5-mini", "gpt-5.5-nano"])
-        elif base_model == "gpt-5.5-mini":
+        elif canonical_base_model == "gpt-5.5-mini":
             variants.append("gpt-5.5-nano")
+        elif canonical_base_model == "gpt-5.5-nano":
+            variants.append("gpt-5")
 
         fallback_models: list[str] = [f"{prefix}{variant}" for variant in variants if variant != base_model]
         if fallback_models:
