@@ -10,9 +10,9 @@ const GRAPH_SIMULATION = {
   linkSpring: 0.7,
 } as const;
 const REPULSION_LEVELS = {
-  weak: 0.12,
-  medium: 0.55,
-  strong: 1.35,
+  weak: 0.24,
+  medium: 1.1,
+  strong: 2.7,
 } as const;
 
 type GraphNode = {
