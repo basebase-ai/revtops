@@ -129,11 +129,18 @@ const MODEL_FAMILY_DEFAULTS: Record<string, { primary: string; fast: string }> =
   minimax: { primary: 'MiniMax-M2.7', fast: 'MiniMax-M2.7-highspeed' },
   openai: { primary: 'gpt-5.5', fast: 'gpt-5.5-mini' },
   gemini: { primary: 'gemini-2.5-pro', fast: 'gemini-2.5-flash' },
+  qwen: { primary: 'qwen3-coder-plus', fast: 'qwen3-30b-a3b-instruct-2507' },
 };
 
 const isOpenAICheapLikeModel = (modelName: string): boolean => {
   const normalized = modelName.trim().toLowerCase();
-  return normalized.includes('mini') || normalized.includes('nano') || normalized.includes('flash');
+  return (
+    normalized.includes('mini')
+    || normalized.includes('nano')
+    || normalized.includes('flash')
+    || normalized.includes('turbo')
+    || normalized.includes('speed')
+  );
 };
 
 export function OrganizationPanel({ organization, currentUser, initialTab = 'team', onClose, mode = 'panel' }: OrganizationPanelProps): JSX.Element {
@@ -684,6 +691,7 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
       if (normalized.startsWith('claude')) return 'anthropic';
       if (normalized.startsWith('minimax')) return 'minimax';
       if (normalized.startsWith('gemini')) return 'gemini';
+      if (normalized.startsWith('qwen')) return 'qwen';
       if (normalized.startsWith('gpt') || normalized.startsWith('o1') || normalized.startsWith('o3') || normalized.startsWith('o4')) return 'openai';
       return null;
     };
