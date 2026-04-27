@@ -42,6 +42,7 @@ export function GraphMagic(): JSX.Element {
   const [endDate, setEndDate] = useState(new Date().toISOString().slice(0, 10));
   const [selectedDate, setSelectedDate] = useState(new Date().toISOString().slice(0, 10));
   const [availableSnapshotDates, setAvailableSnapshotDates] = useState<string[]>([]);
+  const [isLoadingSnapshotDates, setIsLoadingSnapshotDates] = useState(false);
   const [graph, setGraph] = useState<GraphResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [nodeId, setNodeId] = useState<string | null>(null);
@@ -110,14 +111,17 @@ export function GraphMagic(): JSX.Element {
     const fetchSnapshotDates = async (): Promise<void> => {
       if (!orgId) {
         setAvailableSnapshotDates([]);
+        setIsLoadingSnapshotDates(false);
         return;
       }
+      setIsLoadingSnapshotDates(true);
       console.debug('[Graph Magic] Fetching available snapshot dates', { orgId });
       const { data, error: reqErr } = await apiRequest<GraphSnapshotDatesResponse>(`/admin-topic-graph/${orgId}/dates`);
       if (reqErr || !data) {
         console.debug('[Graph Magic] Failed to fetch snapshot dates', { orgId, reqErr });
         setAvailableSnapshotDates([]);
         setError(reqErr ?? 'Failed to load available snapshot dates');
+        setIsLoadingSnapshotDates(false);
         return;
       }
       const dates = data.dates ?? [];
@@ -128,6 +132,7 @@ export function GraphMagic(): JSX.Element {
         setSnippets([]);
         setNodeId(null);
         setError('No graph snapshots available for this organization.');
+        setIsLoadingSnapshotDates(false);
         return;
       }
       setError(null);
@@ -135,6 +140,7 @@ export function GraphMagic(): JSX.Element {
         if (dates.includes(currentSelectedDate)) return currentSelectedDate;
         return dates[0] ?? currentSelectedDate;
       });
+      setIsLoadingSnapshotDates(false);
     };
 
     void fetchSnapshotDates();
@@ -249,9 +255,11 @@ export function GraphMagic(): JSX.Element {
             className="px-3 py-2 rounded bg-surface-800 text-surface-100"
             value={selectedDate}
             onChange={(e) => setSelectedDate(e.target.value)}
-            disabled={availableSnapshotDates.length === 0}
+            disabled={isLoadingSnapshotDates || availableSnapshotDates.length === 0}
           >
-            {availableSnapshotDates.length === 0 ? (
+            {isLoadingSnapshotDates ? (
+              <option value="">Loading snapshots...</option>
+            ) : availableSnapshotDates.length === 0 ? (
               <option value="">No snapshots available</option>
             ) : (
               availableSnapshotDates.map((snapshotDate) => (
@@ -310,7 +318,7 @@ export function GraphMagic(): JSX.Element {
         ) : (
           <div className="text-surface-400 text-sm">No graph data loaded.</div>
         )}
-        <p className="absolute right-3 bottom-2 text-xs text-surface-500">© Graph Magic</p>
+        <p className="absolute right-3 bottom-2 text-xs text-surface-500">© Uncle Jethro</p>
       </div>
       {nodeId && (
         <div className="bg-surface-900 border border-surface-800 rounded-lg p-3">
