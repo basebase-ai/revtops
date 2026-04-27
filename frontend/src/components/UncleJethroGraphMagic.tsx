@@ -4,8 +4,9 @@ import { apiRequest } from '../lib/api';
 import { useAuthStore, type UserOrganization } from '../store';
 
 const MAX_RANGE_DAYS = 30;
+const ROYGBIV = ['#e11d48', '#f97316', '#facc15', '#22c55e', '#3b82f6', '#6366f1', '#a855f7'];
 
-type GraphNode = { id: string; label: string; heat: number };
+type GraphNode = { id: string; label: string; heat: number; mention_count?: number; source?: string; centrality?: number; color?: string };
 type GraphEdge = { source: string; target: string; weight: number };
 
 type GraphResponse = {
@@ -29,7 +30,7 @@ export function UncleJethroGraphMagic(): JSX.Element {
   const [graph, setGraph] = useState<GraphResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [nodeId, setNodeId] = useState<string | null>(null);
-  const [snippets, setSnippets] = useState<Array<{ ref: string; snippet: string; event_time: string }>>([]);
+  const [snippets, setSnippets] = useState<Array<{ ref: string; snippet: string; event_time: string; source_display?: string }>>([]);
   const [availableOrgs, setAvailableOrgs] = useState<AdminOrganization[]>([]);
 
   const partialWarning = graph?.run_metadata?.coverage?.partial ? 'Partial data: some sources failed' : null;
@@ -103,18 +104,34 @@ export function UncleJethroGraphMagic(): JSX.Element {
     await fetchGraph();
   };
 
+
+  const graphWithVisuals = useMemo(() => {
+    if (!graph) return null;
+    const nodes = graph.graph.nodes.map((node) => {
+      const mentionCount = Math.max(1, Math.round(node.mention_count ?? 1));
+      return {
+        ...node,
+        mention_count: mentionCount,
+        color: ROYGBIV[Math.floor(Math.random() * ROYGBIV.length)],
+      };
+    });
+    return { ...graph.graph, nodes, edges: graph.graph.edges };
+  }, [graph]);
+
+  const selectedNode = useMemo(() => graphWithVisuals?.nodes.find((n) => n.id === nodeId) ?? null, [graphWithVisuals, nodeId]);
+
   const onNodeClick = async (id: string): Promise<void> => {
     setNodeId(id);
-    const { data } = await apiRequest<{ snippets: Array<{ ref: string; snippet: string; event_time: string }> }>(
+    const { data } = await apiRequest<{ snippets: Array<{ ref: string; snippet: string; event_time: string; source_display?: string }> }>(
       `/admin-topic-graph/${orgId}/${selectedDate}/nodes/${encodeURIComponent(id)}/evidence`
     );
     setSnippets(data?.snippets ?? []);
   };
 
   return (
-    <div className="space-y-4">
+    <div className="h-full min-h-[70vh] flex flex-col gap-4">
       <h2 className="text-xl font-semibold text-surface-50">UJ&apos;s Graph Magic</h2>
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+      <div className="grid grid-cols-1 md:grid-cols-5 gap-3 items-end">
         <label className="flex flex-col gap-1 text-xs text-surface-400">
           <span>Organization</span>
           <select
@@ -140,16 +157,26 @@ export function UncleJethroGraphMagic(): JSX.Element {
           <span>Generate end date</span>
           <input type="date" className="px-3 py-2 rounded bg-surface-800" value={endDate} onChange={(e) => setEndDate(e.target.value)} />
         </label>
+        <div className="flex items-end">
+          <button disabled={!canRebuild} onClick={() => void rebuild()} className="w-full md:w-auto px-3 py-2 rounded bg-primary-600 disabled:opacity-40">
+            Rebuild
+          </button>
+        </div>
       </div>
-      <button disabled={!canRebuild} onClick={() => void rebuild()} className="px-3 py-2 rounded bg-primary-600 disabled:opacity-40">Rebuild</button>
       {partialWarning && <p className="text-xs text-amber-400">Partial data: some sources failed</p>}
       {error && <p className="text-sm text-red-400">{error}</p>}
-      <div className="bg-surface-900 border border-surface-800 rounded-lg p-3 h-[480px]">
-        {graph ? (
+      <div className="bg-surface-900 border border-surface-800 rounded-lg p-3 flex-1 min-h-[560px] relative">
+        {graphWithVisuals ? (
           <Cosmograph
-            nodes={graph.graph.nodes}
-            links={graph.graph.edges}
+            nodes={graphWithVisuals.nodes}
+            links={graphWithVisuals.edges}
             nodeLabelAccessor={(n: GraphNode) => n.label}
+            nodeColor={(n: GraphNode) => n.color ?? '#a855f7'}
+            nodeSize={(n: GraphNode) => Math.max(2, n.mention_count ?? 1)}
+            linkWidth={(link: GraphEdge) => Math.max(1, link.weight)}
+            linkColor={(link: GraphEdge) => `rgba(148, 163, 184, ${Math.min(0.85, 0.2 + (link.weight / 8))})`}
+            fitViewOnInit
+            className="h-full w-full"
             onClick={(clickedNode: GraphNode | undefined) => {
               if (!clickedNode?.id) return;
               void onNodeClick(clickedNode.id);
@@ -158,14 +185,22 @@ export function UncleJethroGraphMagic(): JSX.Element {
         ) : (
           <div className="text-surface-400 text-sm">No graph data loaded.</div>
         )}
+        <p className="absolute right-3 bottom-2 text-xs text-surface-500">© Uncle Jethro</p>
       </div>
       {nodeId && (
         <div className="bg-surface-900 border border-surface-800 rounded-lg p-3">
           <h3 className="font-medium mb-2">Node details: {nodeId}</h3>
+          {selectedNode && (
+            <div className="mb-3 grid grid-cols-1 md:grid-cols-3 gap-2 text-xs text-surface-400">
+              <div>Source (oldest mention): <span className="text-surface-200">{selectedNode.source ?? 'Unknown'}</span></div>
+              <div>Mentions: <span className="text-surface-200">{selectedNode.mention_count ?? 0}</span></div>
+              <div>Centrality (edges): <span className="text-surface-200">{selectedNode.centrality ?? 0}</span></div>
+            </div>
+          )}
           <ul className="space-y-2">
             {snippets.map((s) => (
               <li key={s.ref} className="text-sm text-surface-300 border-b border-surface-800 pb-2">
-                <div className="text-xs text-surface-500">{s.event_time} · {s.ref}</div>
+                <div className="text-xs text-surface-500">{s.event_time} · {s.source_display ?? 'Unknown source'} · {s.ref}</div>
                 <div>{s.snippet}</div>
               </li>
             ))}

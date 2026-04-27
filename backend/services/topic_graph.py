@@ -4,6 +4,7 @@ import logging
 import math
 import re
 from collections import defaultdict
+from itertools import combinations
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Any
@@ -27,6 +28,28 @@ logger = logging.getLogger(__name__)
 PARTIAL_WARNING = "Partial data: some sources failed"
 _TOKEN_RE = re.compile(r"\b[A-Za-z][A-Za-z0-9_\-]{2,}\b")
 _STOP = {"the", "and", "for", "with", "this", "that", "from", "you", "your", "are", "was"}
+
+_SOURCE_FRIENDLY_NAMES: dict[str, str] = {
+    "slack": "Slack",
+    "salesforce": "Salesforce",
+    "hubspot": "HubSpot",
+    "apollo": "Apollo",
+    "linear": "Linear",
+    "github": "GitHub",
+    "jira": "Jira",
+    "gmail": "Gmail",
+    "google_drive": "Google Drive",
+    "google_calendar": "Google Calendar",
+    "microsoft_mail": "Microsoft Mail",
+    "microsoft_calendar": "Microsoft Calendar",
+    "zoom": "Zoom",
+    "asana": "Asana",
+    "teams": "Microsoft Teams",
+}
+
+
+def _connector_friendly_name(source: str) -> str:
+    return _SOURCE_FRIENDLY_NAMES.get(source.lower(), source.replace("_", " ").title())
 
 
 @dataclass
@@ -147,6 +170,7 @@ async def _collect_slack_docs(org_id: str, graph_date: date) -> tuple[list[Candi
                     ChatMessage.content_blocks,
                     ChatMessage.created_at,
                     Conversation.source_channel_id,
+                    Conversation.title,
                 )
                 .join(Conversation, Conversation.id == ChatMessage.conversation_id)
                 .where(
@@ -179,7 +203,12 @@ async def _collect_slack_docs(org_id: str, graph_date: date) -> tuple[list[Candi
                     ingestion_time=created_at,
                 )
             )
-        if r.source_channel_id:
+        channel_name = (r.title or "").strip()
+        if channel_name.startswith("#"):
+            channel_name = channel_name[1:]
+        if channel_name:
+            channels.append(channel_name)
+        elif r.source_channel_id:
             channels.append(str(r.source_channel_id))
     return docs, channels
 
@@ -236,6 +265,8 @@ async def generate_topic_graph_for_org_day(org_id: str, graph_date: date) -> dic
     logger.info("topic_graph.stage=extract org_id=%s docs=%d", org_id, len(docs))
     node_to_docs: dict[str, set[str]] = defaultdict(set)
     node_newest: dict[str, datetime] = {}
+    node_oldest: dict[str, datetime] = {}
+    node_mentions: dict[str, int] = defaultdict(int)
     evidence: dict[str, list[dict[str, Any]]] = defaultdict(list)
 
     extracted_nodes: list[str] = []
@@ -245,11 +276,16 @@ async def generate_topic_graph_for_org_day(org_id: str, graph_date: date) -> dic
         for token in top_tokens:
             extracted_nodes.append(token)
             node_to_docs[token].add(doc.source_ref)
+            node_mentions[token] += 1
             node_newest[token] = max(node_newest.get(token, doc.event_time), doc.event_time)
+            prev_oldest = node_oldest.get(token)
+            if prev_oldest is None or doc.event_time < prev_oldest:
+                node_oldest[token] = doc.event_time
             evidence[token].append(
                 {
                     "ref": doc.source_ref,
                     "source": doc.source,
+                    "source_display": _connector_friendly_name(doc.source),
                     "event_time": doc.event_time.isoformat(),
                     "snippet": doc.text[:400],
                     "relevance": doc.text.lower().count(token.lower()),
@@ -261,30 +297,30 @@ async def generate_topic_graph_for_org_day(org_id: str, graph_date: date) -> dic
 
     merged_docs: dict[str, set[str]] = defaultdict(set)
     merged_newest: dict[str, datetime] = {}
+    merged_mentions: dict[str, int] = defaultdict(int)
     merged_evidence: dict[str, list[dict[str, Any]]] = defaultdict(list)
+
     for node, refs in node_to_docs.items():
         cnode = canonical.get(node, node)
         merged_docs[cnode].update(refs)
-        merged_newest[cnode] = max(merged_newest.get(cnode, node_newest.get(node, datetime.now(timezone.utc))), node_newest.get(node, datetime.now(timezone.utc)))
+        newest = node_newest.get(node, datetime.now(timezone.utc))
+        merged_newest[cnode] = max(merged_newest.get(cnode, newest), newest)
+        merged_mentions[cnode] += node_mentions.get(node, 0)
         merged_evidence[cnode].extend(evidence.get(node, []))
 
-    for n in slack_channels + crm_people + crm_companies:
-        cnode = canonical.get(n, n)
-        merged_docs.setdefault(cnode, set())
-        merged_newest.setdefault(cnode, datetime.now(timezone.utc))
+    for channel_name in slack_channels:
+        cnode = canonical.get(channel_name, channel_name)
+        merged_docs[cnode].add(f"slack_channel:{channel_name}")
+        merged_mentions[cnode] += 1
+        now = datetime.now(timezone.utc)
+        merged_newest.setdefault(cnode, now)
 
-    node_list = sorted(merged_docs.keys())
-    nodes: list[dict[str, Any]] = []
-    for i, node in enumerate(node_list):
-        nodes.append(
-            {
-                "id": node,
-                "label": node,
-                "type": "entity",
-                "heat": round(_heat(len(merged_docs[node]), merged_newest[node]), 6),
-                "unique_doc_count": len(merged_docs[node]),
-            }
-        )
+    for seeded_node in crm_people + crm_companies:
+        cnode = canonical.get(seeded_node, seeded_node)
+        merged_docs.setdefault(cnode, set())
+        merged_mentions.setdefault(cnode, 0)
+        now = datetime.now(timezone.utc)
+        merged_newest.setdefault(cnode, now)
 
     edge_weights: dict[tuple[str, str], float] = defaultdict(float)
     doc_to_nodes: dict[str, set[str]] = defaultdict(set)
@@ -292,10 +328,36 @@ async def generate_topic_graph_for_org_day(org_id: str, graph_date: date) -> dic
         for ref in refs:
             doc_to_nodes[ref].add(node)
     for nodeset in doc_to_nodes.values():
-        ns = sorted(nodeset)
-        for i in range(len(ns)):
-            for j in range(i + 1, len(ns)):
-                edge_weights[(ns[i], ns[j])] += 1.0
+        for a, b in combinations(sorted(nodeset), 2):
+            edge_weights[(a, b)] += 1.0
+
+    centrality: dict[str, int] = defaultdict(int)
+    for a, b in edge_weights:
+        centrality[a] += 1
+        centrality[b] += 1
+
+    node_list = sorted(merged_docs.keys())
+    nodes: list[dict[str, Any]] = []
+    for node in node_list:
+        oldest_source = "Unknown"
+        if merged_evidence.get(node):
+            oldest_row = min(merged_evidence[node], key=lambda row: str(row.get("event_time", "")))
+            oldest_source = str(oldest_row.get("source_display") or oldest_row.get("source") or "Unknown")
+        elif any(str(ref).startswith("slack_channel:") for ref in merged_docs.get(node, set())):
+            oldest_source = "Slack"
+        nodes.append(
+            {
+                "id": node,
+                "label": node,
+                "type": "entity",
+                "heat": round(_heat(len(merged_docs[node]), merged_newest[node]), 6),
+                "unique_doc_count": len(merged_docs[node]),
+                "mention_count": int(merged_mentions.get(node, 0)),
+                "source": oldest_source,
+                "centrality": int(centrality.get(node, 0)),
+            }
+        )
+
     edges = [{"source": a, "target": b, "weight": w} for (a, b), w in sorted(edge_weights.items())]
 
     coverage["partial"] = any(v.get("status") == "failed" for v in coverage["sources"].values())
