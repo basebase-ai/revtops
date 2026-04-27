@@ -64,7 +64,7 @@ def test_openai_not_found_fallbacks_skip_unavailable_nano_variant():
     adapter = OpenAIAdapter(api_key="test-key")
 
     assert adapter._openai_not_found_fallback_models("gpt-5.5") == ["gpt-5", "gpt-5.5-mini"]
-    assert adapter._openai_not_found_fallback_models("gpt-5.5-mini") == ["gpt-5"]
+    assert adapter._openai_not_found_fallback_models("gpt-5.5-mini") == ["gpt-5-mini", "gpt-5"]
     assert adapter._openai_not_found_fallback_models("gpt-5.5-nano") == [
         "gpt-5.5-mini",
         "gpt-5",

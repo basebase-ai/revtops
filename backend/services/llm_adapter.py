@@ -442,7 +442,7 @@ class OpenAIAdapter:
         if canonical_base_model == "gpt-5.5":
             variants.extend(["gpt-5", "gpt-5.5-mini"])
         elif canonical_base_model == "gpt-5.5-mini":
-            variants.append("gpt-5")
+            variants.extend(["gpt-5-mini", "gpt-5"])
         elif canonical_base_model == "gpt-5.5-nano":
             variants.extend(["gpt-5.5-mini", "gpt-5"])
 
