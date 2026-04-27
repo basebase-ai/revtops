@@ -240,7 +240,6 @@ export function GraphMagic(): JSX.Element {
 
   return (
     <div className="h-full min-h-0 flex flex-col gap-4">
-      <h2 className="text-xl font-semibold text-surface-50">Graph Magic</h2>
       <div className="grid grid-cols-1 md:grid-cols-6 gap-3 items-end">
         <label className="flex flex-col gap-1 text-xs text-surface-400">
           <span>Organization</span>
