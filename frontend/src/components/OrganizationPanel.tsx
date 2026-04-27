@@ -691,7 +691,7 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
       if (normalized.startsWith('claude')) return 'anthropic';
       if (normalized.startsWith('minimax')) return 'minimax';
       if (normalized.startsWith('gemini')) return 'gemini';
-      if (normalized.startsWith('qwen')) return 'qwen';
+      if (normalized.startsWith('qwen') || normalized.startsWith('qwq')) return 'qwen';
       if (normalized.startsWith('gpt') || normalized.startsWith('o1') || normalized.startsWith('o3') || normalized.startsWith('o4')) return 'openai';
       return null;
     };
