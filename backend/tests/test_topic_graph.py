@@ -1,6 +1,6 @@
 from datetime import date, datetime, timezone
 
-from services.topic_graph import _rank_evidence, _tokenize, iter_date_range, select_watermark_time
+from services.topic_graph import _extract_candidate_nodes, _rank_evidence, _tokenize, iter_date_range, select_watermark_time
 
 
 def test_watermark_prefers_source_event_time() -> None:
@@ -51,3 +51,22 @@ def test_tokenize_filters_common_english_words() -> None:
     assert "kubernetes" in tokens
     assert "roadmap" in tokens
     assert "observability" in tokens
+
+
+def test_extract_candidate_nodes_includes_phrases() -> None:
+    nodes = _extract_candidate_nodes("Need fundraising plan and pitch assets for seed extension")
+    assert "fundraising" in nodes
+    assert "pitch assets" in nodes
+    assert "seed extension" in nodes
+
+
+def test_rank_evidence_balances_sources() -> None:
+    rows = [
+        {"ref": "slack-1", "source": "slack", "relevance": 10, "event_time": "2026-04-10T01:00:00+00:00", "snippet": "a"},
+        {"ref": "slack-2", "source": "slack", "relevance": 9, "event_time": "2026-04-11T01:00:00+00:00", "snippet": "b"},
+        {"ref": "slack-3", "source": "slack", "relevance": 8, "event_time": "2026-04-12T01:00:00+00:00", "snippet": "c"},
+        {"ref": "crm-1", "source": "salesforce", "relevance": 7, "event_time": "2026-04-13T01:00:00+00:00", "snippet": "d"},
+    ]
+    out = _rank_evidence(rows, "fundraising")
+    slack_rows = [r for r in out if r.get("source") == "slack"]
+    assert len(slack_rows) <= 2

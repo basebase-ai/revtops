@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import math
 import re
-from collections import defaultdict
+from collections import Counter, defaultdict
 from itertools import combinations
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
@@ -30,6 +30,8 @@ PARTIAL_WARNING = "Partial data: some sources failed"
 _TOKEN_RE = re.compile(r"\b[A-Za-z][A-Za-z0-9_\-]{2,}\b")
 _STOP = {"the", "and", "for", "with", "this", "that", "from", "you", "your", "are", "was"}
 _MIN_NODE_MENTIONS = 2
+_NGRAM_MIN = 2
+_NGRAM_MAX = 3
 
 _SOURCE_FRIENDLY_NAMES: dict[str, str] = {
     "slack": "Slack",
@@ -90,6 +92,19 @@ def _tokenize(text: str) -> list[str]:
         if token in _STOP or token in COMMON_ENGLISH_WORDS:
             continue
         out.append(token)
+    return out
+
+
+def _extract_candidate_nodes(text: str) -> list[str]:
+    tokens = _tokenize(text)
+    if not tokens:
+        return []
+    out: list[str] = list(tokens)
+    for n in range(_NGRAM_MIN, _NGRAM_MAX + 1):
+        for i in range(0, max(len(tokens) - n + 1, 0)):
+            phrase = " ".join(tokens[i : i + n]).strip()
+            if phrase:
+                out.append(phrase)
     return out
 
 
@@ -269,28 +284,31 @@ async def generate_topic_graph_for_org_day(org_id: str, graph_date: date) -> dic
     node_newest: dict[str, datetime] = {}
     node_oldest: dict[str, datetime] = {}
     node_mentions: dict[str, int] = defaultdict(int)
+    node_sources: dict[str, set[str]] = defaultdict(set)
     evidence: dict[str, list[dict[str, Any]]] = defaultdict(list)
 
     extracted_nodes: list[str] = []
     for doc in docs:
-        tokens = _tokenize(doc.text)
-        top_tokens = tokens[:25]
-        for token in top_tokens:
-            extracted_nodes.append(token)
-            node_to_docs[token].add(doc.source_ref)
-            node_mentions[token] += 1
-            node_newest[token] = max(node_newest.get(token, doc.event_time), doc.event_time)
-            prev_oldest = node_oldest.get(token)
+        nodes = _extract_candidate_nodes(doc.text)
+        node_counts = Counter(nodes)
+        top_nodes = [node for node, _count in node_counts.most_common(25)]
+        for node in top_nodes:
+            extracted_nodes.append(node)
+            node_to_docs[node].add(doc.source_ref)
+            node_mentions[node] += int(node_counts.get(node, 1))
+            node_sources[node].add(doc.source)
+            node_newest[node] = max(node_newest.get(node, doc.event_time), doc.event_time)
+            prev_oldest = node_oldest.get(node)
             if prev_oldest is None or doc.event_time < prev_oldest:
-                node_oldest[token] = doc.event_time
-            evidence[token].append(
+                node_oldest[node] = doc.event_time
+            evidence[node].append(
                 {
                     "ref": doc.source_ref,
                     "source": doc.source,
                     "source_display": _connector_friendly_name(doc.source),
                     "event_time": doc.event_time.isoformat(),
                     "snippet": doc.text[:400],
-                    "relevance": doc.text.lower().count(token.lower()),
+                    "relevance": doc.text.lower().count(node.lower()),
                 }
             )
 
@@ -300,6 +318,7 @@ async def generate_topic_graph_for_org_day(org_id: str, graph_date: date) -> dic
     merged_docs: dict[str, set[str]] = defaultdict(set)
     merged_newest: dict[str, datetime] = {}
     merged_mentions: dict[str, int] = defaultdict(int)
+    merged_sources: dict[str, set[str]] = defaultdict(set)
     merged_evidence: dict[str, list[dict[str, Any]]] = defaultdict(list)
 
     for node, refs in node_to_docs.items():
@@ -308,6 +327,7 @@ async def generate_topic_graph_for_org_day(org_id: str, graph_date: date) -> dic
         newest = node_newest.get(node, datetime.now(timezone.utc))
         merged_newest[cnode] = max(merged_newest.get(cnode, newest), newest)
         merged_mentions[cnode] += node_mentions.get(node, 0)
+        merged_sources[cnode].update(node_sources.get(node, set()))
         merged_evidence[cnode].extend(evidence.get(node, []))
 
     for channel_name in slack_channels:
@@ -333,22 +353,33 @@ async def generate_topic_graph_for_org_day(org_id: str, graph_date: date) -> dic
         merged_docs.pop(node, None)
         merged_newest.pop(node, None)
         merged_mentions.pop(node, None)
+        merged_sources.pop(node, None)
         merged_evidence.pop(node, None)
 
-    edge_weights: dict[tuple[str, str], float] = defaultdict(float)
+    edge_cooccurrence: dict[tuple[str, str], float] = defaultdict(float)
     doc_to_nodes: dict[str, set[str]] = defaultdict(set)
     for node, refs in merged_docs.items():
         for ref in refs:
             doc_to_nodes[ref].add(node)
+    node_doc_frequency: dict[str, int] = {node: len(refs) for node, refs in merged_docs.items()}
     for nodeset in doc_to_nodes.values():
         for a, b in combinations(sorted(nodeset), 2):
-            edge_weights[(a, b)] += 1.0
+            edge_cooccurrence[(a, b)] += 1.0
+
+    total_docs = max(len(doc_to_nodes), 1)
+    edge_weights: dict[tuple[str, str], float] = {}
+    for (a, b), cooc in edge_cooccurrence.items():
+        freq_a = max(node_doc_frequency.get(a, 1), 1)
+        freq_b = max(node_doc_frequency.get(b, 1), 1)
+        pmi = math.log((cooc * total_docs) / (freq_a * freq_b))
+        edge_weights[(a, b)] = round(max(0.0, pmi) * cooc, 6)
 
     centrality: dict[str, int] = defaultdict(int)
     for a, b in edge_weights:
         centrality[a] += 1
         centrality[b] += 1
 
+    baseline_mentions = await _load_recent_node_baseline(org_id, graph_date)
     node_list = sorted(merged_docs.keys())
     nodes: list[dict[str, Any]] = []
     for node in node_list:
@@ -358,6 +389,10 @@ async def generate_topic_graph_for_org_day(org_id: str, graph_date: date) -> dic
             oldest_source = str(oldest_row.get("source_display") or oldest_row.get("source") or "Unknown")
         elif any(str(ref).startswith("slack_channel:") for ref in merged_docs.get(node, set())):
             oldest_source = "Slack"
+        mention_count = int(merged_mentions.get(node, 0))
+        source_diversity = len(merged_sources.get(node, set()))
+        baseline_avg = float(baseline_mentions.get(node, 0.0))
+        momentum = round(mention_count / max(baseline_avg, 1.0), 6)
         nodes.append(
             {
                 "id": node,
@@ -365,9 +400,11 @@ async def generate_topic_graph_for_org_day(org_id: str, graph_date: date) -> dic
                 "type": "entity",
                 "heat": round(_heat(len(merged_docs[node]), merged_newest[node]), 6),
                 "unique_doc_count": len(merged_docs[node]),
-                "mention_count": int(merged_mentions.get(node, 0)),
+                "mention_count": mention_count,
                 "source": oldest_source,
                 "centrality": int(centrality.get(node, 0)),
+                "source_diversity": source_diversity,
+                "momentum": momentum,
             }
         )
 
@@ -452,15 +489,51 @@ def _rank_evidence(evidence_rows: list[dict[str, Any]], node_id: str) -> list[di
     recent_sorted = sorted(rows, key=lambda r: (str(r.get("event_time", "")), str(r.get("ref", ""))), reverse=True)
     out: list[dict[str, Any]] = []
     used: set[str] = set()
+    source_budget: dict[str, int] = defaultdict(int)
     for row in relevance_sorted + recent_sorted:
         ref = str(row.get("ref", ""))
         if ref in used:
             continue
+        source = str(row.get("source", "")).strip().lower()
+        if source and source_budget[source] >= 2:
+            continue
         used.add(ref)
+        if source:
+            source_budget[source] += 1
         out.append(row)
         if len(out) >= int(settings.TOPIC_GRAPH_SNIPPETS_PER_NODE):
             break
     return out
+
+
+async def _load_recent_node_baseline(org_id: str, graph_date: date, lookback_days: int = 7) -> dict[str, float]:
+    start = graph_date - timedelta(days=max(lookback_days, 1))
+    end = graph_date
+    async with get_admin_session() as session:
+        rows = (
+            await session.execute(
+                select(TopicGraphSnapshot.graph_payload).where(
+                    TopicGraphSnapshot.organization_id == UUID(org_id),
+                    and_(TopicGraphSnapshot.graph_date >= start, TopicGraphSnapshot.graph_date < end),
+                )
+            )
+        ).all()
+    accumulator: dict[str, list[int]] = defaultdict(list)
+    for row in rows:
+        payload = row[0]
+        if not isinstance(payload, dict):
+            continue
+        nodes = payload.get("nodes", [])
+        if not isinstance(nodes, list):
+            continue
+        for node in nodes:
+            if not isinstance(node, dict):
+                continue
+            node_id = str(node.get("id", "")).strip()
+            if not node_id:
+                continue
+            accumulator[node_id].append(int(node.get("mention_count", 0) or 0))
+    return {node_id: (sum(counts) / len(counts)) for node_id, counts in accumulator.items() if counts}
 
 
 async def get_node_evidence(org_id: str, graph_date: date, node_id: str) -> list[dict[str, Any]]:

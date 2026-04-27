@@ -15,7 +15,17 @@ const REPULSION_LEVELS = {
   strong: 1.35,
 } as const;
 
-type GraphNode = { id: string; label: string; heat: number; mention_count?: number; source?: string; centrality?: number; color?: string };
+type GraphNode = {
+  id: string;
+  label: string;
+  heat: number;
+  mention_count?: number;
+  source?: string;
+  centrality?: number;
+  source_diversity?: number;
+  momentum?: number;
+  color?: string;
+};
 type GraphEdge = { source: string; target: string; weight: number };
 type NodeSizeMode = 'mentions' | 'centrality' | 'composite';
 type RepulsionLevel = keyof typeof REPULSION_LEVELS;
@@ -26,6 +36,16 @@ type GraphNodeWithVisuals = GraphNode & {
   heat: number;
   importance_score: number;
   color: string;
+};
+
+const hashToColor = (value: string): string => {
+  let hash = 0;
+  for (let idx = 0; idx < value.length; idx += 1) {
+    hash = ((hash << 5) - hash) + value.charCodeAt(idx);
+    hash |= 0;
+  }
+  const colorIndex = Math.abs(hash) % ROYGBIV.length;
+  return ROYGBIV[colorIndex] ?? '#a855f7';
 };
 
 type GraphResponse = {
@@ -205,7 +225,7 @@ export function GraphMagic(): JSX.Element {
         centrality,
         heat,
         importance_score: importanceScore,
-        color: ROYGBIV[Math.floor(Math.random() * ROYGBIV.length)] ?? '#a855f7',
+        color: hashToColor(node.id),
       };
     });
 
@@ -378,6 +398,8 @@ export function GraphMagic(): JSX.Element {
                   <div>Mentions: <span className="text-surface-200">{selectedNode.mention_count ?? 0}</span></div>
                   <div>Centrality (edges): <span className="text-surface-200">{selectedNode.centrality ?? 0}</span></div>
                   <div>Heat: <span className="text-surface-200">{selectedNode.heat ?? 0}</span></div>
+                  <div>Source diversity: <span className="text-surface-200">{selectedNode.source_diversity ?? 0}</span></div>
+                  <div>Momentum (vs prior 7d): <span className="text-surface-200">{(selectedNode.momentum ?? 0).toFixed(2)}x</span></div>
                   <div>Importance score: <span className="text-surface-200">{(selectedNode.importance_score ?? 0).toFixed(3)}</span></div>
                   <div>Breakdown: <span className="text-surface-200">mentions 50% · centrality 35% · heat 15%</span></div>
                 </div>
