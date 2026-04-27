@@ -1,7 +1,7 @@
 """Add channel memory scope columns.
 
-Revision ID: 134_chan_mem_scope
-Revises: 133_org_members_self_edit
+Revision ID: 135_chan_mem_scope
+Revises: 134_topic_graph
 Create Date: 2026-04-25
 """
 
@@ -12,8 +12,8 @@ from typing import Sequence, Union
 from alembic import op
 import sqlalchemy as sa
 
-revision: str = "134_chan_mem_scope"
-down_revision: Union[str, Sequence[str], None] = "133_org_members_self_edit"
+revision: str = "135_chan_mem_scope"
+down_revision: Union[str, Sequence[str], None] = "134_topic_graph"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
