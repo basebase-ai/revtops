@@ -244,6 +244,11 @@ export function GraphMagic(): JSX.Element {
     setSnippets(data?.snippets ?? []);
   };
 
+  const closeNodeDetails = (): void => {
+    setNodeId(null);
+    setSnippets([]);
+  };
+
   return (
     <div className="h-full min-h-0 flex flex-col gap-4">
       <div className="grid grid-cols-1 md:grid-cols-7 gap-3 items-end">
@@ -337,38 +342,58 @@ export function GraphMagic(): JSX.Element {
             fitViewOnInit
             className="h-full w-full"
             onClick={(clickedNode: GraphNode | undefined) => {
-              if (!clickedNode?.id) return;
+              if (!clickedNode?.id) {
+                closeNodeDetails();
+                return;
+              }
               void onNodeClick(clickedNode.id);
             }}
           />
         ) : (
           <div className="text-surface-400 text-sm">No graph data loaded.</div>
         )}
+        {nodeId && (
+          <>
+            <button
+              type="button"
+              className="absolute inset-0 bg-black/50"
+              aria-label="Close node details"
+              onClick={closeNodeDetails}
+            />
+            <div className="absolute inset-x-3 top-3 md:left-1/2 md:right-auto md:w-[min(820px,calc(100%-1.5rem))] md:-translate-x-1/2 z-10 bg-surface-900 border border-surface-700 rounded-lg p-3 shadow-2xl max-h-[70vh] overflow-y-auto">
+              <div className="flex items-start justify-between gap-3 mb-2">
+                <h3 className="font-medium">Node details: {nodeId}</h3>
+                <button
+                  type="button"
+                  className="px-2 py-1 rounded bg-surface-800 text-surface-300 hover:bg-surface-700 text-xs"
+                  onClick={closeNodeDetails}
+                >
+                  Close
+                </button>
+              </div>
+              {selectedNode && (
+                <div className="mb-3 grid grid-cols-1 md:grid-cols-3 gap-2 text-xs text-surface-400">
+                  <div>Source (oldest mention): <span className="text-surface-200">{selectedNode.source ?? 'Unknown'}</span></div>
+                  <div>Mentions: <span className="text-surface-200">{selectedNode.mention_count ?? 0}</span></div>
+                  <div>Centrality (edges): <span className="text-surface-200">{selectedNode.centrality ?? 0}</span></div>
+                  <div>Heat: <span className="text-surface-200">{selectedNode.heat ?? 0}</span></div>
+                  <div>Importance score: <span className="text-surface-200">{(selectedNode.importance_score ?? 0).toFixed(3)}</span></div>
+                  <div>Breakdown: <span className="text-surface-200">mentions 50% · centrality 35% · heat 15%</span></div>
+                </div>
+              )}
+              <ul className="space-y-2">
+                {snippets.map((s) => (
+                  <li key={s.ref} className="text-sm text-surface-300 border-b border-surface-800 pb-2">
+                    <div className="text-xs text-surface-500">{s.event_time} · {s.source_display ?? 'Unknown source'} · {s.ref}</div>
+                    <div>{s.snippet}</div>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </>
+        )}
         <p className="absolute right-3 bottom-2 text-xs text-surface-500">© Uncle Jethro</p>
       </div>
-      {nodeId && (
-        <div className="bg-surface-900 border border-surface-800 rounded-lg p-3">
-          <h3 className="font-medium mb-2">Node details: {nodeId}</h3>
-          {selectedNode && (
-            <div className="mb-3 grid grid-cols-1 md:grid-cols-3 gap-2 text-xs text-surface-400">
-              <div>Source (oldest mention): <span className="text-surface-200">{selectedNode.source ?? 'Unknown'}</span></div>
-              <div>Mentions: <span className="text-surface-200">{selectedNode.mention_count ?? 0}</span></div>
-              <div>Centrality (edges): <span className="text-surface-200">{selectedNode.centrality ?? 0}</span></div>
-              <div>Heat: <span className="text-surface-200">{selectedNode.heat ?? 0}</span></div>
-              <div>Importance score: <span className="text-surface-200">{(selectedNode.importance_score ?? 0).toFixed(3)}</span></div>
-              <div>Breakdown: <span className="text-surface-200">mentions 50% · centrality 35% · heat 15%</span></div>
-            </div>
-          )}
-          <ul className="space-y-2">
-            {snippets.map((s) => (
-              <li key={s.ref} className="text-sm text-surface-300 border-b border-surface-800 pb-2">
-                <div className="text-xs text-surface-500">{s.event_time} · {s.source_display ?? 'Unknown source'} · {s.ref}</div>
-                <div>{s.snippet}</div>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
     </div>
   );
 }
