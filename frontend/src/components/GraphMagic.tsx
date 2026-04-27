@@ -10,9 +10,9 @@ const GRAPH_SIMULATION = {
   linkSpring: 0.7,
 } as const;
 const REPULSION_LEVELS = {
-  weak: 0.18,
-  medium: 0.34,
-  strong: 0.58,
+  weak: 0.12,
+  medium: 0.55,
+  strong: 1.35,
 } as const;
 
 type GraphNode = { id: string; label: string; heat: number; mention_count?: number; source?: string; centrality?: number; color?: string };
@@ -251,7 +251,7 @@ export function GraphMagic(): JSX.Element {
 
   return (
     <div className="h-full min-h-0 flex flex-col gap-4">
-      <div className="grid grid-cols-1 md:grid-cols-7 gap-3 items-end">
+      <div className="grid grid-cols-1 md:grid-cols-8 gap-3 items-end">
         <label className="flex flex-col gap-1 text-xs text-surface-400">
           <span>Organization</span>
           <select
@@ -294,10 +294,15 @@ export function GraphMagic(): JSX.Element {
           <span>Generate end date</span>
           <input type="date" className="px-3 py-2 rounded bg-surface-800" value={endDate} onChange={(e) => setEndDate(e.target.value)} />
         </label>
+        <div className="flex items-end">
+          <button disabled={!canRebuild} onClick={() => void rebuild()} className="w-full md:w-auto px-3 py-2 rounded bg-primary-600 disabled:opacity-40">
+            Generate
+          </button>
+        </div>
         <label className="flex flex-col gap-1 text-xs text-surface-400">
           <span>Node size mode</span>
           <select
-            className="w-1/2 min-w-[9rem] px-3 py-2 rounded bg-surface-800 text-surface-100"
+            className="w-full px-3 py-2 rounded bg-surface-800 text-surface-100"
             value={sizeMode}
             onChange={(e) => setSizeMode(e.target.value as NodeSizeMode)}
           >
@@ -309,7 +314,7 @@ export function GraphMagic(): JSX.Element {
         <label className="flex flex-col gap-1 text-xs text-surface-400">
           <span>Node repulsion</span>
           <select
-            className="w-1/2 min-w-[9rem] px-3 py-2 rounded bg-surface-800 text-surface-100"
+            className="w-full px-3 py-2 rounded bg-surface-800 text-surface-100"
             value={repulsionLevel}
             onChange={(e) => setRepulsionLevel(e.target.value as RepulsionLevel)}
           >
@@ -318,17 +323,13 @@ export function GraphMagic(): JSX.Element {
             <option value="strong">Strong</option>
           </select>
         </label>
-        <div className="flex items-end">
-          <button disabled={!canRebuild} onClick={() => void rebuild()} className="w-full md:w-auto px-3 py-2 rounded bg-primary-600 disabled:opacity-40">
-            Rebuild
-          </button>
-        </div>
       </div>
       {partialWarning && <p className="text-xs text-amber-400">Partial data: some sources failed</p>}
       {error && <p className="text-sm text-red-400">{error}</p>}
       <div className="bg-surface-900 border border-surface-800 rounded-lg p-3 flex-1 min-h-[68vh] relative">
         {graphWithVisuals ? (
           <Cosmograph
+            key={`graph-${orgId}-${selectedDate}-${repulsionLevel}`}
             nodes={graphWithVisuals.nodes}
             links={graphWithVisuals.edges}
             nodeLabelAccessor={(n: GraphNode) => n.label}
