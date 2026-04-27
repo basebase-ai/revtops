@@ -124,12 +124,18 @@ interface OrganizationPanelProps {
   mode?: 'panel' | 'page';
 }
 
+const normalizeModelFamilyName = (family: string): string => {
+  const normalized = family.trim().toLowerCase();
+  if (normalized === 'qwen') return 'alibaba';
+  return normalized;
+};
+
 const MODEL_FAMILY_DEFAULTS: Record<string, { primary: string; fast: string }> = {
   anthropic: { primary: 'claude-opus-4-6', fast: 'claude-haiku-4-5-20251001' },
   minimax: { primary: 'MiniMax-M2.7', fast: 'MiniMax-M2.7-highspeed' },
   openai: { primary: 'gpt-5.5', fast: 'gpt-5.5-mini' },
   gemini: { primary: 'gemini-2.5-pro', fast: 'gemini-2.5-flash' },
-  qwen: { primary: 'qwen3-coder-plus', fast: 'qwen3-30b-a3b-instruct-2507' },
+  alibaba: { primary: 'qwen3-coder-plus', fast: 'qwen3-30b-a3b-instruct-2507' },
 };
 
 const isOpenAICheapLikeModel = (modelName: string): boolean => {
@@ -686,19 +692,19 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
   const handleModelChange = async (field: 'llmPrimaryModel' | 'llmCheapModel' | 'llmWorkflowModel', value: string): Promise<void> => {
     const inferModelFamily = (modelName: string): string | null => {
       const explicitProvider: string | undefined = llmModelMap[modelName];
-      if (explicitProvider && explicitProvider.trim()) return explicitProvider.trim().toLowerCase();
+      if (explicitProvider && explicitProvider.trim()) return normalizeModelFamilyName(explicitProvider);
       const normalized = modelName.trim().toLowerCase();
       if (normalized.startsWith('claude')) return 'anthropic';
       if (normalized.startsWith('minimax')) return 'minimax';
       if (normalized.startsWith('gemini')) return 'gemini';
-      if (normalized.startsWith('qwen')) return 'qwen';
+      if (normalized.startsWith('qwen')) return 'alibaba';
       if (normalized.startsWith('gpt') || normalized.startsWith('o1') || normalized.startsWith('o3') || normalized.startsWith('o4')) return 'openai';
       return null;
     };
 
     const resolveFamilyDefaultModel = (family: string, modelRole: 'primary' | 'fast'): string => {
       const familyModels: string[] = Object.entries(llmModelMap)
-        .filter(([, provider]) => provider?.trim().toLowerCase() === family)
+        .filter(([, provider]) => normalizeModelFamilyName(provider ?? '') === family)
         .map(([modelName]) => modelName);
 
       if (familyModels.length > 0) {
