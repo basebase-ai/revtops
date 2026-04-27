@@ -1,6 +1,6 @@
 """Add LLM provider/model config columns to organizations.
 
-Allows per-org LLM provider selection (anthropic, minimax, openai, gemini)
+Allows per-org LLM provider selection (anthropic, minimax, openai, gemini, qwen)
 with model overrides. NULL means use global defaults from env vars.
 
 Revision ID: 130_org_llm_config

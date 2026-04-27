@@ -77,6 +77,9 @@ class Settings(BaseSettings):
     # MiniMax (Anthropic-compatible LLM provider)
     MINIMAX_API_KEY: Optional[str] = None
 
+    # Qwen / DashScope (OpenAI-compatible LLM provider)
+    QWEN_API_KEY: Optional[str] = None
+
     # Google Gemini (OpenAI-compatible LLM provider)
     GEMINI_API_KEY: Optional[str] = None
 

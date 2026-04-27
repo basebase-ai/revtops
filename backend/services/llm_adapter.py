@@ -1,9 +1,9 @@
 """
 Provider-agnostic LLM adapter layer.
 
-Two adapter implementations cover four providers:
+Two adapter implementations cover five providers:
 - AnthropicAdapter: Anthropic (native) + MiniMax (base_url override)
-- OpenAIAdapter: OpenAI (native) + Gemini (base_url override)
+- OpenAIAdapter: OpenAI (native) + Gemini/Qwen (base_url override)
 
 Both yield a common StreamEvent protocol so the orchestrator and services
 are decoupled from vendor-specific SDK details.
@@ -25,11 +25,12 @@ logger = logging.getLogger(__name__)
 # Common types
 # ---------------------------------------------------------------------------
 
-LLMProvider = Literal["anthropic", "minimax", "openai", "gemini"]
+LLMProvider = Literal["anthropic", "minimax", "openai", "gemini", "qwen"]
 
 PROVIDER_BASE_URLS: dict[str, str] = {
     "minimax": "https://api.minimax.io/anthropic",
     "gemini": "https://generativelanguage.googleapis.com/v1beta/openai/",
+    "qwen": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
 }
 
 PROVIDER_DEFAULT_MODELS: dict[str, dict[str, str]] = {
@@ -37,6 +38,7 @@ PROVIDER_DEFAULT_MODELS: dict[str, dict[str, str]] = {
     "minimax": {"primary": "MiniMax-M2.7", "cheap": "MiniMax-M2.7-highspeed"},
     "openai": {"primary": "gpt-5.5", "cheap": "gpt-5.5-mini"},
     "gemini": {"primary": "gemini-2.5-pro", "cheap": "gemini-2.5-flash"},
+    "qwen": {"primary": "qwen3-max", "cheap": "qwen-flash"},
 }
 
 
@@ -805,6 +807,7 @@ _PROVIDERS_WITHOUT_DOCUMENT_BLOCKS: frozenset[str] = frozenset({
     "minimax",
     "openai",
     "gemini",
+    "qwen",
 })
 
 
@@ -819,7 +822,7 @@ def get_adapter(config: LLMConfig) -> AnthropicAdapter | OpenAIAdapter:
             supports_document_blocks=supports_docs,
         )
 
-    if config.provider in ("openai", "gemini"):
+    if config.provider in ("openai", "gemini", "qwen"):
         base_url = config.base_url or PROVIDER_BASE_URLS.get(config.provider)
         supports_docs: bool = config.provider not in _PROVIDERS_WITHOUT_DOCUMENT_BLOCKS
         return OpenAIAdapter(

@@ -3,7 +3,7 @@ Resolve per-org LLM configuration from database + environment variables.
 
 Resolution order for API keys:
 1. LLM_KEY__<org_handle> environment variable (org-specific)
-2. Global provider key (ANTHROPIC_API_KEY, MINIMAX_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY)
+2. Global provider key (ANTHROPIC_API_KEY, MINIMAX_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY, QWEN_API_KEY)
 
 Provider/model resolution:
 1. Organization.llm_provider / llm_primary_model / llm_cheap_model / llm_workflow_model (DB)
@@ -33,6 +33,7 @@ _GLOBAL_PROVIDER_KEYS: dict[str, str | None] = {
     "minimax": getattr(settings, "MINIMAX_API_KEY", None),
     "openai": settings.OPENAI_API_KEY,
     "gemini": getattr(settings, "GEMINI_API_KEY", None),
+    "qwen": getattr(settings, "QWEN_API_KEY", None),
 }
 
 _DEFAULT_PROVIDER: LLMProvider = "anthropic"
@@ -229,6 +230,8 @@ def _infer_provider_from_model_name(model: str) -> str | None:
         return "openai"
     if normalized.startswith("gemini"):
         return "gemini"
+    if normalized.startswith(("qwen", "qwq")):
+        return "qwen"
     if normalized.startswith("minimax"):
         return "minimax"
     return None
