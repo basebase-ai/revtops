@@ -135,15 +135,17 @@ const MODEL_FAMILY_DEFAULTS: Record<string, { primary: string; fast: string }> =
   minimax: { primary: 'MiniMax-M2.7', fast: 'MiniMax-M2.7-highspeed' },
   openai: { primary: 'gpt-5.5', fast: 'gpt-5.5-mini' },
   gemini: { primary: 'gemini-2.5-pro', fast: 'gemini-2.5-flash' },
-  alibaba: { primary: 'qwen3-coder-plus', fast: 'qwen3-30b-a3b-instruct-2507' },
+  alibaba: { primary: 'qwen3-coder-plus', fast: 'qwen3-flash' },
 };
 
-const isOpenAICheapLikeModel = (modelName: string): boolean => {
+const isFastModelCandidate = (modelName: string): boolean => {
   const normalized = modelName.trim().toLowerCase();
   return (
     normalized.includes('mini')
     || normalized.includes('nano')
     || normalized.includes('flash')
+    || normalized.includes('haiku')
+    || normalized.includes('sonnet')
     || normalized.includes('turbo')
     || normalized.includes('speed')
   );
@@ -710,10 +712,21 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
       if (familyModels.length > 0) {
         const firstFamilyModel: string = familyModels[0] ?? '';
         const desiredModelPredicate = (modelName: string): boolean => (
-          modelRole === 'fast' ? isOpenAICheapLikeModel(modelName) : !isOpenAICheapLikeModel(modelName)
+          modelRole === 'fast' ? isFastModelCandidate(modelName) : !isFastModelCandidate(modelName)
         );
         const familySpecificDefault = familyModels.find((modelName) => desiredModelPredicate(modelName));
         if (familySpecificDefault) return familySpecificDefault;
+        const defaults = MODEL_FAMILY_DEFAULTS[family];
+        if (defaults) {
+          const fallbackModel = modelRole === 'primary' ? defaults.primary : defaults.fast;
+          console.warn('[OrganizationPanel] No role-specific allowlisted family model found, using hardcoded family default', {
+            family,
+            modelRole,
+            fallbackModel,
+            allowedFamilyModels: familyModels,
+          });
+          return fallbackModel;
+        }
         console.info('[OrganizationPanel] No role-specific family model found, using first allowed model', {
           family,
           modelRole,
