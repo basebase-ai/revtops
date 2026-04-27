@@ -58,6 +58,19 @@ def test_openai_non_hyphenated_gpt55_uses_max_completion_tokens():
     assert adapter._build_token_limit_kwargs(model="gpt5.5", max_tokens=222) == {
         "max_completion_tokens": 222
     }
+
+
+def test_openai_not_found_fallbacks_skip_unavailable_nano_variant():
+    adapter = OpenAIAdapter(api_key="test-key")
+
+    assert adapter._openai_not_found_fallback_models("gpt-5.5") == ["gpt-5", "gpt-5.5-mini"]
+    assert adapter._openai_not_found_fallback_models("gpt-5.5-mini") == ["gpt-5"]
+    assert adapter._openai_not_found_fallback_models("gpt-5.5-nano") == [
+        "gpt-5.5-mini",
+        "gpt-5",
+    ]
+
+
 def test_openai_gpt5_with_provider_prefix_uses_max_completion_tokens():
     adapter = OpenAIAdapter(api_key="test-key")
 

@@ -440,11 +440,11 @@ class OpenAIAdapter:
 
         variants: list[str] = []
         if canonical_base_model == "gpt-5.5":
-            variants.extend(["gpt-5", "gpt-5.5-mini", "gpt-5.5-nano"])
+            variants.extend(["gpt-5", "gpt-5.5-mini"])
         elif canonical_base_model == "gpt-5.5-mini":
-            variants.append("gpt-5.5-nano")
-        elif canonical_base_model == "gpt-5.5-nano":
             variants.append("gpt-5")
+        elif canonical_base_model == "gpt-5.5-nano":
+            variants.extend(["gpt-5.5-mini", "gpt-5"])
 
         fallback_models: list[str] = [f"{prefix}{variant}" for variant in variants if variant != base_model]
         if fallback_models:
