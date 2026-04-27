@@ -130,6 +130,11 @@ const MODEL_FAMILY_DEFAULTS: Record<string, { primary: string; fast: string }> =
   gemini: { primary: 'gemini-2.5-pro', fast: 'gemini-2.5-flash' },
 };
 
+const isOpenAICheapLikeModel = (modelName: string): boolean => {
+  const normalized = modelName.trim().toLowerCase();
+  return normalized.includes('mini') || normalized.includes('nano') || normalized.includes('flash');
+};
+
 export function OrganizationPanel({ organization, currentUser, initialTab = 'team', onClose, mode = 'panel' }: OrganizationPanelProps): JSX.Element {
   const queryClient = useQueryClient();
   const setOrganization = useAppStore((state) => state.setOrganization);
@@ -683,12 +688,35 @@ export function OrganizationPanel({ organization, currentUser, initialTab = 'tea
     };
 
     const resolveFamilyDefaultModel = (family: string, modelRole: 'primary' | 'fast'): string => {
+      const familyModels: string[] = Object.entries(llmModelMap)
+        .filter(([, provider]) => provider?.trim().toLowerCase() === family)
+        .map(([modelName]) => modelName);
+
+      if (familyModels.length > 0) {
+        const firstFamilyModel: string = familyModels[0] ?? '';
+        const desiredModelPredicate = (modelName: string): boolean => (
+          modelRole === 'fast' ? isOpenAICheapLikeModel(modelName) : !isOpenAICheapLikeModel(modelName)
+        );
+        const familySpecificDefault = familyModels.find((modelName) => desiredModelPredicate(modelName));
+        if (familySpecificDefault) return familySpecificDefault;
+        console.info('[OrganizationPanel] No role-specific family model found, using first allowed model', {
+          family,
+          modelRole,
+          selectedModel: firstFamilyModel,
+          allowedFamilyModels: familyModels,
+        });
+        return firstFamilyModel;
+      }
+
       const defaults = MODEL_FAMILY_DEFAULTS[family];
       if (defaults) {
+        console.warn('[OrganizationPanel] Falling back to hardcoded model family defaults because allowlist returned no models for family', {
+          family,
+          modelRole,
+          defaultModel: modelRole === 'primary' ? defaults.primary : defaults.fast,
+        });
         return modelRole === 'primary' ? defaults.primary : defaults.fast;
       }
-      const knownFamilyModel = Object.entries(llmModelMap).find(([, provider]) => provider?.trim().toLowerCase() === family)?.[0];
-      if (knownFamilyModel) return knownFamilyModel;
       return '';
     };
 
