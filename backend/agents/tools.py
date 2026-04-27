@@ -55,7 +55,7 @@ logger = logging.getLogger(__name__)
 _configured_openai_research_model = (settings.OPENAI_RESEARCH_MODEL or "").strip()
 _preferred_openai_research_model = (
     _configured_openai_research_model
-    if _configured_openai_research_model.startswith("gpt-5.5")
+    if _configured_openai_research_model.startswith(("gpt-5.5", "gpt5.5"))
     else "gpt-5.5"
 )
 
@@ -72,7 +72,7 @@ OPENAI_WEB_RESEARCH_FALLBACK_MODELS: tuple[str, ...] = tuple(
     )
 )
 
-if _configured_openai_research_model and not _configured_openai_research_model.startswith("gpt-5.5"):
+if _configured_openai_research_model and not _configured_openai_research_model.startswith(("gpt-5.5", "gpt5.5")):
     logger.warning(
         "[Tools] OPENAI_RESEARCH_MODEL=%s is not GPT-5+. Falling back to GPT-5 family for research synthesis.",
         _configured_openai_research_model,

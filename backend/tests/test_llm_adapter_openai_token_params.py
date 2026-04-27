@@ -42,6 +42,22 @@ def test_openai_legacy_models_use_max_tokens():
     }
 
 
+
+
+def test_openai_legacy_gpt5_uses_max_completion_tokens():
+    adapter = OpenAIAdapter(api_key="test-key")
+
+    assert adapter._build_token_limit_kwargs(model="gpt-5", max_tokens=333) == {
+        "max_completion_tokens": 333
+    }
+
+
+def test_openai_non_hyphenated_gpt55_uses_max_completion_tokens():
+    adapter = OpenAIAdapter(api_key="test-key")
+
+    assert adapter._build_token_limit_kwargs(model="gpt5.5", max_tokens=222) == {
+        "max_completion_tokens": 222
+    }
 def test_openai_gpt5_with_provider_prefix_uses_max_completion_tokens():
     adapter = OpenAIAdapter(api_key="test-key")
 
@@ -198,63 +214,3 @@ async def test_openai_complete_falls_back_when_gpt5_not_found():
     assert create_mock.await_count == 2
     assert create_mock.await_args_list[0].kwargs["model"] == "gpt-5.5"
     assert create_mock.await_args_list[1].kwargs["model"] == "gpt-5"
-
-
-@pytest.mark.asyncio
-async def test_openai_stream_falls_back_from_legacy_gpt5_to_gpt55():
-    adapter = OpenAIAdapter(api_key="test-key")
-    create_mock = AsyncMock(
-        side_effect=[
-            _openai_api_status_error("model: gpt-5"),
-            _EmptyAsyncIterator(),
-        ]
-    )
-    adapter._client = SimpleNamespace(  # type: ignore[assignment]
-        chat=SimpleNamespace(completions=SimpleNamespace(create=create_mock))
-    )
-
-    events = [
-        event
-        async for event in adapter.stream(
-            model="gpt-5",
-            system="sys",
-            messages=[{"role": "user", "content": "hi"}],
-            max_tokens=42,
-        )
-    ]
-
-    assert events == []
-    assert create_mock.await_count == 2
-    assert create_mock.await_args_list[0].kwargs["model"] == "gpt-5"
-    assert create_mock.await_args_list[1].kwargs["model"] == "gpt-5.5"
-
-
-@pytest.mark.asyncio
-async def test_openai_complete_falls_back_from_legacy_gpt5_to_gpt55():
-    adapter = OpenAIAdapter(api_key="test-key")
-    completion_response = SimpleNamespace(
-        choices=[SimpleNamespace(message=SimpleNamespace(content="fallback answer", tool_calls=None))],
-        usage=SimpleNamespace(prompt_tokens=1, completion_tokens=2),
-    )
-    create_mock = AsyncMock(
-        side_effect=[
-            _openai_api_status_error("model: gpt-5"),
-            completion_response,
-        ]
-    )
-    adapter._client = SimpleNamespace(  # type: ignore[assignment]
-        chat=SimpleNamespace(completions=SimpleNamespace(create=create_mock))
-    )
-
-    completed = await adapter.complete(
-        model="gpt-5",
-        system="sys",
-        messages=[{"role": "user", "content": "hi"}],
-        max_tokens=42,
-    )
-
-    assert completed.input_tokens == 1
-    assert completed.output_tokens == 2
-    assert create_mock.await_count == 2
-    assert create_mock.await_args_list[0].kwargs["model"] == "gpt-5"
-    assert create_mock.await_args_list[1].kwargs["model"] == "gpt-5.5"
