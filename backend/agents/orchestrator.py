@@ -1310,10 +1310,10 @@ class ChatOrchestrator:
                 system_prompt += "\n## Global Command (Always Apply)\n"
                 system_prompt += f"- [{global_command_memory['id']}] {global_command_memory['content']}\n"
                 logger.info(
-                    "[Orchestrator] Memory applied type=user-direct conversation_id=%s source=%s memory_id=%s",
+                    "[Orchestrator] Memory applied type=user-direct conversation_id=%s source=%s memory_id_present=%s",
                     self.conversation_id,
                     self.source,
-                    global_command_memory["id"],
+                    bool(global_command_memory.get("id")),
                 )
             if channel_personality_memory:
                 system_prompt += "\n## Channel Personality (Always Apply in this channel)\n"
