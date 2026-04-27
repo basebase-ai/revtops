@@ -636,7 +636,7 @@ const GLOBAL_ADMIN_NAV_ITEMS: ReadonlyArray<{
   },
   {
     id: 'graph-magic',
-    label: "UJ's Graph Magic",
+    label: "Graph Magic",
     icon: (
       <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden>
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 19l6-6 4 4 6-10" />

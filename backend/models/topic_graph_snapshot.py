@@ -12,7 +12,7 @@ from models.database import Base
 
 
 class TopicGraphSnapshot(Base):
-    """Daily cached org graph snapshot for UJ's Graph Magic."""
+    """Daily cached org graph snapshot for Graph Magic."""
 
     __tablename__ = "topic_graph_snapshots"
     __table_args__ = (
