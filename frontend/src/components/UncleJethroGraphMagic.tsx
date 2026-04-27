@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Cosmograph } from '@cosmograph/react';
 import { apiRequest } from '../lib/api';
+import { useAuthStore, type UserOrganization } from '../store';
 
 const MAX_RANGE_DAYS = 30;
 
@@ -14,7 +15,13 @@ type GraphResponse = {
   run_metadata: { coverage?: { partial?: boolean; warning_text?: string } };
 };
 
+type AdminOrganization = {
+  id: string;
+  name: string;
+};
+
 export function UncleJethroGraphMagic(): JSX.Element {
+  const orgMemberships: UserOrganization[] = useAuthStore((state) => state.organizations);
   const [orgId, setOrgId] = useState('');
   const [startDate, setStartDate] = useState(new Date().toISOString().slice(0, 10));
   const [endDate, setEndDate] = useState(new Date().toISOString().slice(0, 10));
@@ -23,8 +30,37 @@ export function UncleJethroGraphMagic(): JSX.Element {
   const [error, setError] = useState<string | null>(null);
   const [nodeId, setNodeId] = useState<string | null>(null);
   const [snippets, setSnippets] = useState<Array<{ ref: string; snippet: string; event_time: string }>>([]);
+  const [availableOrgs, setAvailableOrgs] = useState<AdminOrganization[]>([]);
 
   const partialWarning = graph?.run_metadata?.coverage?.partial ? 'Partial data: some sources failed' : null;
+
+  useEffect(() => {
+    const fetchOrganizations = async (): Promise<void> => {
+      const { data, error: requestError } = await apiRequest<{ organizations: AdminOrganization[] }>(
+        '/waitlist/admin/organizations?limit=1000',
+      );
+      if (requestError || !data?.organizations?.length) {
+        console.debug('[UJ Graph Magic] Falling back to org memberships for org dropdown', {
+          requestError,
+          membershipCount: orgMemberships.length,
+        });
+        const fallbackOrgs: AdminOrganization[] = orgMemberships.map((org) => ({ id: org.id, name: org.name }));
+        setAvailableOrgs(fallbackOrgs);
+        if (!orgId && fallbackOrgs.length > 0) {
+          setOrgId(fallbackOrgs[0].id);
+        }
+        return;
+      }
+
+      const sortedOrgs: AdminOrganization[] = [...data.organizations].sort((a, b) => a.name.localeCompare(b.name));
+      setAvailableOrgs(sortedOrgs);
+      if (!orgId && sortedOrgs.length > 0) {
+        setOrgId(sortedOrgs[0].id);
+      }
+    };
+
+    void fetchOrganizations();
+  }, [orgMemberships, orgId]);
 
   const canRebuild = useMemo(() => {
     if (!orgId) return false;
@@ -36,6 +72,7 @@ export function UncleJethroGraphMagic(): JSX.Element {
 
   const fetchGraph = async (): Promise<void> => {
     if (!orgId) return;
+    console.debug('[UJ Graph Magic] Fetching graph snapshot', { orgId, selectedDate });
     const { data, error: reqErr } = await apiRequest<GraphResponse>(`/admin-topic-graph/${orgId}/${selectedDate}`);
     if (reqErr || !data) {
       setError(reqErr ?? 'Failed to load graph');
@@ -52,6 +89,7 @@ export function UncleJethroGraphMagic(): JSX.Element {
 
   const rebuild = async (): Promise<void> => {
     if (!canRebuild) return;
+    console.debug('[UJ Graph Magic] Rebuilding graphs for range', { orgId, startDate, endDate });
     const { error: reqErr } = await apiRequest('/admin-topic-graph/rebuild', {
       method: 'POST',
       body: JSON.stringify({ organization_id: orgId, start_date: startDate, end_date: endDate }),
@@ -75,10 +113,31 @@ export function UncleJethroGraphMagic(): JSX.Element {
     <div className="space-y-4">
       <h2 className="text-xl font-semibold text-surface-50">UJ&apos;s Graph Magic</h2>
       <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
-        <input className="px-3 py-2 rounded bg-surface-800" placeholder="Organization UUID" value={orgId} onChange={(e) => setOrgId(e.target.value)} />
-        <input type="date" className="px-3 py-2 rounded bg-surface-800" value={selectedDate} onChange={(e) => setSelectedDate(e.target.value)} />
-        <input type="date" className="px-3 py-2 rounded bg-surface-800" value={startDate} onChange={(e) => setStartDate(e.target.value)} />
-        <input type="date" className="px-3 py-2 rounded bg-surface-800" value={endDate} onChange={(e) => setEndDate(e.target.value)} />
+        <label className="flex flex-col gap-1 text-xs text-surface-400">
+          <span>Organization</span>
+          <select
+            className="px-3 py-2 rounded bg-surface-800 text-surface-100"
+            value={orgId}
+            onChange={(e) => setOrgId(e.target.value)}
+          >
+            {availableOrgs.length === 0 && <option value="">No organizations available</option>}
+            {availableOrgs.map((org) => (
+              <option key={org.id} value={org.id}>{org.name}</option>
+            ))}
+          </select>
+        </label>
+        <label className="flex flex-col gap-1 text-xs text-surface-400">
+          <span>Selected date (graph view)</span>
+          <input type="date" className="px-3 py-2 rounded bg-surface-800" value={selectedDate} onChange={(e) => setSelectedDate(e.target.value)} />
+        </label>
+        <label className="flex flex-col gap-1 text-xs text-surface-400">
+          <span>Generate start date</span>
+          <input type="date" className="px-3 py-2 rounded bg-surface-800" value={startDate} onChange={(e) => setStartDate(e.target.value)} />
+        </label>
+        <label className="flex flex-col gap-1 text-xs text-surface-400">
+          <span>Generate end date</span>
+          <input type="date" className="px-3 py-2 rounded bg-surface-800" value={endDate} onChange={(e) => setEndDate(e.target.value)} />
+        </label>
       </div>
       <button disabled={!canRebuild} onClick={() => void rebuild()} className="px-3 py-2 rounded bg-primary-600 disabled:opacity-40">Rebuild</button>
       {partialWarning && <p className="text-xs text-amber-400">Partial data: some sources failed</p>}
