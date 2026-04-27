@@ -6,8 +6,9 @@ import { useAuthStore, type UserOrganization } from '../store';
 const MAX_RANGE_DAYS = 30;
 const ROYGBIV = ['#e11d48', '#f97316', '#facc15', '#22c55e', '#3b82f6', '#6366f1', '#a855f7'];
 
-type GraphNode = { id: string; label: string; heat: number; mention_count?: number; source?: string; centrality?: number; color?: string };
+type GraphNode = { id: string; label: string; heat: number; mention_count?: number; source?: string; centrality?: number; color?: string; importance?: number };
 type GraphEdge = { source: string; target: string; weight: number };
+type NodeImportanceMode = 'mentions' | 'centrality' | 'heat' | 'blended';
 
 type GraphResponse = {
   organization_id: string;
@@ -32,6 +33,7 @@ export function UncleJethroGraphMagic(): JSX.Element {
   const [nodeId, setNodeId] = useState<string | null>(null);
   const [snippets, setSnippets] = useState<Array<{ ref: string; snippet: string; event_time: string; source_display?: string }>>([]);
   const [availableOrgs, setAvailableOrgs] = useState<AdminOrganization[]>([]);
+  const [nodeImportanceMode, setNodeImportanceMode] = useState<NodeImportanceMode>('blended');
 
   const partialWarning = graph?.run_metadata?.coverage?.partial ? 'Partial data: some sources failed' : null;
 
@@ -107,16 +109,41 @@ export function UncleJethroGraphMagic(): JSX.Element {
 
   const graphWithVisuals = useMemo(() => {
     if (!graph) return null;
+    const mentionValues = graph.graph.nodes.map((node) => Math.max(1, Math.round(node.mention_count ?? 1)));
+    const centralityValues = graph.graph.nodes.map((node) => Math.max(0, node.centrality ?? 0));
+    const heatValues = graph.graph.nodes.map((node) => Math.max(0, node.heat ?? 0));
+    const maxMentions = Math.max(...mentionValues, 1);
+    const maxCentrality = Math.max(...centralityValues, 1);
+    const maxHeat = Math.max(...heatValues, 1);
+
     const nodes = graph.graph.nodes.map((node) => {
       const mentionCount = Math.max(1, Math.round(node.mention_count ?? 1));
+      const centrality = Math.max(0, node.centrality ?? 0);
+      const heat = Math.max(0, node.heat ?? 0);
+      const mentionsNormalized = mentionCount / maxMentions;
+      const centralityNormalized = centrality / maxCentrality;
+      const heatNormalized = heat / maxHeat;
+      const blendedImportance = (mentionsNormalized * 0.5) + (centralityNormalized * 0.35) + (heatNormalized * 0.15);
+      const rawImportance =
+        nodeImportanceMode === 'mentions'
+          ? mentionsNormalized
+          : nodeImportanceMode === 'centrality'
+            ? centralityNormalized
+            : nodeImportanceMode === 'heat'
+              ? heatNormalized
+              : blendedImportance;
+
       return {
         ...node,
         mention_count: mentionCount,
+        centrality,
+        heat,
+        importance: Math.max(0.05, rawImportance),
         color: ROYGBIV[Math.floor(Math.random() * ROYGBIV.length)],
       };
     });
     return { ...graph.graph, nodes, edges: graph.graph.edges };
-  }, [graph]);
+  }, [graph, nodeImportanceMode]);
 
   const selectedNode = useMemo(() => graphWithVisuals?.nodes.find((n) => n.id === nodeId) ?? null, [graphWithVisuals, nodeId]);
 
@@ -131,7 +158,7 @@ export function UncleJethroGraphMagic(): JSX.Element {
   return (
     <div className="h-full min-h-[70vh] flex flex-col gap-4">
       <h2 className="text-xl font-semibold text-surface-50">UJ&apos;s Graph Magic</h2>
-      <div className="grid grid-cols-1 md:grid-cols-5 gap-3 items-end">
+      <div className="grid grid-cols-1 md:grid-cols-6 gap-3 items-end">
         <label className="flex flex-col gap-1 text-xs text-surface-400">
           <span>Organization</span>
           <select
@@ -157,6 +184,19 @@ export function UncleJethroGraphMagic(): JSX.Element {
           <span>Generate end date</span>
           <input type="date" className="px-3 py-2 rounded bg-surface-800" value={endDate} onChange={(e) => setEndDate(e.target.value)} />
         </label>
+        <label className="flex flex-col gap-1 text-xs text-surface-400">
+          <span>Node size metric</span>
+          <select
+            className="px-3 py-2 rounded bg-surface-800 text-surface-100"
+            value={nodeImportanceMode}
+            onChange={(event) => setNodeImportanceMode(event.target.value as NodeImportanceMode)}
+          >
+            <option value="blended">Blended (mentions + centrality + heat)</option>
+            <option value="mentions">Mentions</option>
+            <option value="centrality">Centrality</option>
+            <option value="heat">Heat</option>
+          </select>
+        </label>
         <div className="flex items-end">
           <button disabled={!canRebuild} onClick={() => void rebuild()} className="w-full md:w-auto px-3 py-2 rounded bg-primary-600 disabled:opacity-40">
             Rebuild
@@ -172,7 +212,7 @@ export function UncleJethroGraphMagic(): JSX.Element {
             links={graphWithVisuals.edges}
             nodeLabelAccessor={(n: GraphNode) => n.label}
             nodeColor={(n: GraphNode) => n.color ?? '#a855f7'}
-            nodeSize={(n: GraphNode) => Math.max(2, n.mention_count ?? 1)}
+            nodeSize={(n: GraphNode) => 2 + (Math.sqrt(n.importance ?? 0.05) * 14)}
             linkWidth={(link: GraphEdge) => Math.max(1, link.weight)}
             linkColor={(link: GraphEdge) => `rgba(148, 163, 184, ${Math.min(0.85, 0.2 + (link.weight / 8))})`}
             fitViewOnInit
