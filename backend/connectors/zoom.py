@@ -14,6 +14,9 @@ from datetime import date, datetime, timedelta
 from typing import Any, Optional
 
 import httpx
+from sqlalchemy import inspect as sa_inspect
+from sqlalchemy.exc import NoInspectionAvailable
+from sqlalchemy.orm.exc import DetachedInstanceError
 
 from connectors.base import BaseConnector
 from connectors.registry import AuthType, Capability, ConnectorMeta, ConnectorScope
@@ -26,6 +29,26 @@ TRANSCRIPT_FILE_TYPES = {"TRANSCRIPT", "VTT"}
 MAX_TRANSCRIPT_LENGTH = 4000
 
 logger = logging.getLogger(__name__)
+
+
+def _safe_meeting_id(meeting_record: Any) -> uuid.UUID:
+    """Extract meeting UUID without triggering lazy loads on detached ORM rows."""
+    try:
+        state = sa_inspect(meeting_record)
+        identity = getattr(state, "identity", None)
+        if identity and identity[0] is not None:
+            return uuid.UUID(str(identity[0]))
+    except NoInspectionAvailable:
+        pass
+
+    raw_id = getattr(getattr(meeting_record, "__dict__", {}), "get", lambda _k: None)("id")
+    if raw_id is not None:
+        return uuid.UUID(str(raw_id))
+
+    try:
+        return uuid.UUID(str(meeting_record.id))
+    except DetachedInstanceError as exc:
+        raise ValueError("Meeting record id is unavailable on detached SQLAlchemy instance") from exc
 
 
 class ZoomConnector(BaseConnector):
@@ -231,9 +254,10 @@ class ZoomConnector(BaseConnector):
                         title=topic,
                         status="completed",
                     )
+                    meeting_record_id: uuid.UUID = _safe_meeting_id(meeting_record)
                     logger.info(
                         "Matched Zoom recording to meeting",
-                        extra={"meeting_id": meeting_record.id, "zoom_meeting_id": meeting_id},
+                        extra={"meeting_id": meeting_record_id, "zoom_meeting_id": meeting_id},
                     )
 
                     for transcript_file in transcript_files:
@@ -286,7 +310,7 @@ class ZoomConnector(BaseConnector):
                                     )
                                     session.add(activity)
 
-                                activity.meeting_id = meeting_record.id
+                                activity.meeting_id = meeting_record_id
                                 activity.type = "zoom_transcript"
                                 activity.subject = topic
                                 activity.description = transcript_text[:MAX_TRANSCRIPT_LENGTH]
