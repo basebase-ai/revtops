@@ -95,6 +95,10 @@ def _classify_sync_failure(error_message: str) -> tuple[str, int]:
         for snippet in (
             "timed out",
             "timeout",
+            "timeouterror",
+            "deadline exceeded",
+            "read timed out",
+            "connect timeout",
             "temporarily unavailable",
             "service unavailable",
             "bad gateway",
@@ -288,13 +292,17 @@ async def _sync_integration(
         }
 
     except Exception as e:
-        error_msg = str(e)
+        raw_error_msg = str(e)
+        error_msg = raw_error_msg.strip()
         if not error_msg:
             error_msg = f"{type(e).__name__} args={getattr(e, 'args', ())!r}"
-        failure_case, log_level = _classify_sync_failure(error_msg)
+        classify_input = f"{type(e).__name__}: {error_msg}"
+        failure_case, log_level = _classify_sync_failure(classify_input)
+        retryable = _should_retry_sync_failure(failure_case)
         logger.debug(
             "Connector sync failure diagnostics provider=%s org=%s user=%s sync_since_override=%s "
-            "connector_initialized=%s error_type=%s error_repr=%r",
+            "connector_initialized=%s error_type=%s error_repr=%r raw_error=%r "
+            "normalized_error=%s failure_case=%s retryable=%s",
             provider,
             organization_id,
             user_id,
@@ -302,7 +310,23 @@ async def _sync_integration(
             connector is not None,
             type(e).__name__,
             e,
+            raw_error_msg,
+            error_msg,
+            failure_case,
+            retryable,
         )
+        if not raw_error_msg.strip():
+            logger.warning(
+                "Connector sync raised exception with empty message provider=%s org=%s user=%s "
+                "error_type=%s synthesized_error=%s failure_case=%s retryable=%s",
+                provider,
+                organization_id,
+                user_id,
+                type(e).__name__,
+                error_msg,
+                failure_case,
+                retryable,
+            )
         logger.log(
             log_level,
             "Connector sync failed provider=%s org=%s user=%s case=%s error=%s",
