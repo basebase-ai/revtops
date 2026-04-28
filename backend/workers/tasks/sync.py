@@ -55,7 +55,10 @@ def _parse_sync_since_iso(iso_str: str | None) -> datetime | None:
     return parsed
 
 
-def _classify_sync_failure(error_message: str) -> tuple[str, int]:
+def _classify_sync_failure(
+    error_message: str,
+    error: BaseException | None = None,
+) -> tuple[str, int]:
     """
     Classify common connector sync failure modes for clearer logging.
 
@@ -63,6 +66,14 @@ def _classify_sync_failure(error_message: str) -> tuple[str, int]:
         Tuple of (failure_case, suggested_log_level)
     """
     normalized = error_message.lower()
+    if error is not None:
+        error_type_name = type(error).__name__.lower()
+        if (
+            isinstance(error, TimeoutError)
+            or "timeout" in error_type_name
+            or "timedout" in error_type_name
+        ):
+            return ("upstream_transient_error", logging.WARNING)
     if any(
         snippet in normalized
         for snippet in (
@@ -289,24 +300,27 @@ async def _sync_integration(
 
     except Exception as e:
         error_msg = str(e)
-        failure_case, log_level = _classify_sync_failure(error_msg)
+        failure_case, log_level = _classify_sync_failure(error_msg, e)
+        error_type = type(e).__name__
         logger.debug(
             "Connector sync failure diagnostics provider=%s org=%s user=%s sync_since_override=%s "
-            "connector_initialized=%s error_type=%s",
+            "connector_initialized=%s error_type=%s error_repr=%r",
             provider,
             organization_id,
             user_id,
             sync_since_dt.isoformat() if sync_since_dt else None,
             connector is not None,
-            type(e).__name__,
+            error_type,
+            e,
         )
         logger.log(
             log_level,
-            "Connector sync failed provider=%s org=%s user=%s case=%s error=%s",
+            "Connector sync failed provider=%s org=%s user=%s case=%s error_type=%s error=%s",
             provider,
             organization_id,
             user_id,
             failure_case,
+            error_type,
             error_msg,
             exc_info=True,
         )
@@ -339,6 +353,8 @@ async def _sync_integration(
             "organization_id": organization_id,
             "provider": provider,
             "error": error_msg,
+            "failure_case": failure_case,
+            "error_type": error_type,
         }
 
 
@@ -466,7 +482,9 @@ def sync_integration(
     )
     if result.get("status") == "failed":
         error_message: str = str(result.get("error") or "")
-        failure_case, _ = _classify_sync_failure(error_message)
+        failure_case: str = str(result.get("failure_case") or "")
+        if not failure_case:
+            failure_case, _ = _classify_sync_failure(error_message)
         retries_so_far: int = int(getattr(self.request, "retries", 0) or 0)
         if _should_retry_sync_failure(failure_case):
             delay_seconds = _compute_sync_retry_delay_seconds(retries_so_far)
