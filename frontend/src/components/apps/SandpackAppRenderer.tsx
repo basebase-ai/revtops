@@ -7,7 +7,8 @@
  * 3. SDK + Plot shim inlined (no module bundler needed)
  * 4. Basebase's code has imports stripped (everything is already in scope)
  *
- * The iframe uses sandbox="allow-scripts" for security isolation.
+ * The iframe uses a restrictive sandbox while allowing popups so app links
+ * with target="_blank" / window.open() can open in a new tab.
  */
 
 import { useEffect, useState, useCallback, useRef } from "react";
@@ -424,7 +425,7 @@ export function SandpackAppRenderer({
       <iframe
         ref={iframeRef}
         srcDoc={srcdoc}
-        sandbox="allow-scripts allow-same-origin"
+        sandbox="allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox"
         style={{
           width: "100%",
           height: "100%",
