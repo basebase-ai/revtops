@@ -927,6 +927,40 @@ Call via `run_on_connector(connector='google_drive', action='edit_file', params=
             "web_view_link": row.web_view_link,
         }
 
+    async def _get_live_file_snapshot(self, external_id: str) -> Optional[dict[str, Any]]:
+        """Fetch file metadata directly from Drive when local synced metadata is missing."""
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(
+                f"{DRIVE_API_BASE}/files/{external_id}",
+                headers=self._get_headers(),
+                params={
+                    "fields": FILE_FIELDS,
+                    "supportsAllDrives": "true",
+                },
+            )
+
+        if response.status_code == 404:
+            logger.info("[GoogleDrive] Live file lookup returned 404 for external_id=%s", external_id)
+            return None
+
+        if response.status_code != 200:
+            logger.warning(
+                "[GoogleDrive] Live file lookup failed for external_id=%s status=%s body=%s",
+                external_id,
+                response.status_code,
+                response.text[:300],
+            )
+            return None
+
+        file_meta: dict[str, Any] = response.json()
+        await self._upsert_created_file(file_meta)
+        return {
+            "name": file_meta.get("name", ""),
+            "mime_type": file_meta.get("mimeType", ""),
+            "folder_path": "/",
+            "web_view_link": file_meta.get("webViewLink"),
+        }
+
     async def get_file_content(self, external_id: str) -> dict[str, Any]:
         """
         Get the text content of a Google Drive file.
@@ -941,7 +975,13 @@ Call via `run_on_connector(connector='google_drive', action='edit_file', params=
 
         file_snapshot: Optional[dict[str, Any]] = await self._get_shared_file_snapshot(external_id)
         if not file_snapshot:
-            return {"error": f"File not found in synced metadata: {external_id}"}
+            logger.info(
+                "[GoogleDrive] Falling back to live file metadata lookup for external_id=%s",
+                external_id,
+            )
+            file_snapshot = await self._get_live_file_snapshot(external_id)
+        if not file_snapshot:
+            return {"error": f"File not found in synced metadata or via live API lookup: {external_id}"}
 
         mime_type: str = file_snapshot["mime_type"]
         file_name: str = file_snapshot["name"]
