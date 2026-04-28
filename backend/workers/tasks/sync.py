@@ -289,16 +289,19 @@ async def _sync_integration(
 
     except Exception as e:
         error_msg = str(e)
+        if not error_msg:
+            error_msg = f"{type(e).__name__} args={getattr(e, 'args', ())!r}"
         failure_case, log_level = _classify_sync_failure(error_msg)
         logger.debug(
             "Connector sync failure diagnostics provider=%s org=%s user=%s sync_since_override=%s "
-            "connector_initialized=%s error_type=%s",
+            "connector_initialized=%s error_type=%s error_repr=%r",
             provider,
             organization_id,
             user_id,
             sync_since_dt.isoformat() if sync_since_dt else None,
             connector is not None,
             type(e).__name__,
+            e,
         )
         logger.log(
             log_level,

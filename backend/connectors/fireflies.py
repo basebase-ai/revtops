@@ -10,6 +10,7 @@ Responsibilities:
 """
 
 import logging
+import time
 import uuid
 from datetime import datetime, timedelta
 from typing import Any, Optional
@@ -63,19 +64,63 @@ class FirefliesConnector(BaseConnector):
         if variables:
             payload["variables"] = variables
 
+        started_at = time.monotonic()
+        op_name = "unknown"
+        if "query " in query:
+            try:
+                op_name = query.split("query ", 1)[1].split("(", 1)[0].strip() or "unknown"
+            except Exception:
+                op_name = "unknown"
+
+        logger.debug(
+            "Fireflies GraphQL request start org=%s user=%s op=%s timeout_seconds=30 variables_keys=%s",
+            self.organization_id,
+            self.user_id,
+            op_name,
+            list(variables.keys()) if variables else [],
+        )
         async with httpx.AsyncClient() as client:
-            response = await client.post(
-                FIREFLIES_API_BASE,
-                headers=headers,
-                json=payload,
-                timeout=30.0,
-            )
-            response.raise_for_status()
-            data: dict[str, Any] = response.json()
+            try:
+                response = await client.post(
+                    FIREFLIES_API_BASE,
+                    headers=headers,
+                    json=payload,
+                    timeout=30.0,
+                )
+                elapsed_ms = int((time.monotonic() - started_at) * 1000)
+                logger.debug(
+                    "Fireflies GraphQL response received org=%s user=%s op=%s status=%s elapsed_ms=%s request_id=%s",
+                    self.organization_id,
+                    self.user_id,
+                    op_name,
+                    response.status_code,
+                    elapsed_ms,
+                    response.headers.get("x-request-id") or response.headers.get("cf-ray"),
+                )
+                response.raise_for_status()
+                data: dict[str, Any] = response.json()
+            except Exception:
+                elapsed_ms = int((time.monotonic() - started_at) * 1000)
+                logger.exception(
+                    "Fireflies GraphQL request failed org=%s user=%s op=%s elapsed_ms=%s timeout_seconds=30",
+                    self.organization_id,
+                    self.user_id,
+                    op_name,
+                    elapsed_ms,
+                )
+                raise
 
             if "errors" in data:
                 errors = data["errors"]
                 error_msg = errors[0].get("message", "Unknown GraphQL error") if errors else "Unknown error"
+                logger.warning(
+                    "Fireflies GraphQL returned errors org=%s user=%s op=%s errors_count=%s first_error=%s",
+                    self.organization_id,
+                    self.user_id,
+                    op_name,
+                    len(errors),
+                    error_msg,
+                )
                 raise ValueError(f"Fireflies API error: {error_msg}")
 
             return data.get("data", {})
