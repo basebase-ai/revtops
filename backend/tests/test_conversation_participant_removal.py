@@ -24,8 +24,15 @@ Access paths tested against:
 """
 
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from typing import Optional
 from uuid import UUID
+
+from sqlalchemy import select
+from sqlalchemy.dialects import postgresql
+
+from api.routes.chat import _build_conversation_access_filter
+from models.conversation import Conversation
 
 
 # ---------------------------------------------------------------------------
@@ -137,12 +144,12 @@ def _user_can_access_artifact_via_conversation(
     """Artifact access via /artifacts/conversation/{id} (artifacts.py:361-416).
 
     Current production code checks:
+      - user has conversation access via _build_conversation_access_filter
       - artifact.conversation_id == requested conversation id
       - artifact.user_id == auth.user_id OR artifact.user_id IS NULL
-
-    NOTE: This helper intentionally mirrors the current endpoint behavior,
-    including the lack of an explicit conversation-access gate.
     """
+    if not _user_has_conversation_access(auth, conv):
+        return False
     # Route-scoped query only returns artifacts for the requested conversation.
     if artifact.conversation_id != conv.id:
         return False
@@ -150,6 +157,25 @@ def _user_can_access_artifact_via_conversation(
     if artifact.user_id == auth.user_id or artifact.user_id is None:
         return True
     return False
+
+
+def _compile_access_filter_sql(
+    auth: FakeAuthContext,
+    slack_user_ids: set[str] | None = None,
+) -> str:
+    """Compile the real SQLAlchemy access filter for parity assertions."""
+    real_auth = SimpleNamespace(
+        user_id=auth.user_id,
+        organization_id=auth.organization_id,
+    )
+    stmt = select(Conversation.id).where(
+        _build_conversation_access_filter(real_auth, slack_user_ids=slack_user_ids)
+    )
+    compiled = stmt.compile(
+        dialect=postgresql.dialect(),
+        compile_kwargs={"literal_binds": True},
+    )
+    return " ".join(str(compiled).split())
 
 
 def _user_can_access_action_ledger(
@@ -182,6 +208,37 @@ def _remove_participant(conv: FakeConversation, user_id: UUID) -> bool:
     current.remove(user_id)
     conv.participating_user_ids = current
     return True
+
+
+# ===========================================================================
+# 0. PRODUCTION FILTER PARITY CHECKS
+# ===========================================================================
+
+
+class TestProductionAccessFilterParity:
+    """Ensure this module still exercises the real SQL access filter."""
+
+    def test_shared_org_branch_exists_when_org_present(self) -> None:
+        auth = FakeAuthContext(user_id=MEMBER_ID, organization_id=ORG_ID)
+        sql = _compile_access_filter_sql(auth)
+        assert "conversations.scope = 'shared'" in sql
+        assert "conversations.organization_id =" in sql
+
+    def test_shared_org_branch_omitted_without_org(self) -> None:
+        auth = FakeAuthContext(user_id=MEMBER_ID, organization_id=None)
+        sql = _compile_access_filter_sql(auth)
+        assert "conversations.scope = 'shared'" not in sql
+
+    def test_slack_branch_omitted_without_slack_user_ids(self) -> None:
+        auth = FakeAuthContext(user_id=MEMBER_ID, organization_id=ORG_ID)
+        sql = _compile_access_filter_sql(auth, slack_user_ids=None)
+        assert "conversations.source = 'slack'" not in sql
+
+    def test_slack_branch_present_with_slack_user_ids(self) -> None:
+        auth = FakeAuthContext(user_id=MEMBER_ID, organization_id=ORG_ID)
+        sql = _compile_access_filter_sql(auth, slack_user_ids={"U_MEMBER"})
+        assert "conversations.source = 'slack'" in sql
+        assert "conversations.source_user_id IN ('U_MEMBER')" in sql
 
 
 # ===========================================================================
@@ -486,7 +543,7 @@ class TestHistoricalDataAccessRevocation:
         assert _user_can_access_messages(auth, conv) is False
 
     def test_artifact_access_revoked_after_removal(self) -> None:
-        """System artifacts remain accessible via conversation artifact route post-removal."""
+        """System artifacts are blocked after participant removal."""
         conv = FakeConversation(
             id=CONVERSATION_ID,
             user_id=OWNER_ID,
@@ -506,12 +563,12 @@ class TestHistoricalDataAccessRevocation:
         # Before removal: accessible
         assert _user_can_access_artifact_via_conversation(auth, conv, artifact) is True
 
-        # After removal: still accessible under current route ownership/null-user filter
+        # After removal: blocked because conversation access is revoked
         _remove_participant(conv, MEMBER_ID)
-        assert _user_can_access_artifact_via_conversation(auth, conv, artifact) is True
+        assert _user_can_access_artifact_via_conversation(auth, conv, artifact) is False
 
     def test_own_artifacts_in_conversation_inaccessible_via_conversation_route(self) -> None:
-        """User-owned artifacts remain accessible via conversation artifact route post-removal."""
+        """User-owned artifacts are blocked after removal from conversation."""
         conv = FakeConversation(
             id=CONVERSATION_ID,
             user_id=OWNER_ID,
@@ -531,9 +588,9 @@ class TestHistoricalDataAccessRevocation:
         # Before: accessible (both conv access + ownership match)
         assert _user_can_access_artifact_via_conversation(auth, conv, artifact) is True
 
-        # After removal: still accessible under current route ownership/null-user filter
+        # After removal: blocked because conversation access is revoked
         _remove_participant(conv, MEMBER_ID)
-        assert _user_can_access_artifact_via_conversation(auth, conv, artifact) is True
+        assert _user_can_access_artifact_via_conversation(auth, conv, artifact) is False
 
     def test_action_ledger_tool_results_access_after_removal(self) -> None:
         """Tool execution results in action ledger follow user_id ownership rules.
@@ -789,7 +846,7 @@ class TestSecurityValidationPoints:
         assert _user_can_access_messages(auth, conv) is False
 
     def test_artifacts_access_revoked(self) -> None:
-        """Artifacts remain accessible via conversation route under current filtering."""
+        """Artifacts are blocked when conversation access is revoked."""
         conv = FakeConversation(
             id=CONVERSATION_ID,
             user_id=OWNER_ID,
@@ -804,7 +861,7 @@ class TestSecurityValidationPoints:
             organization_id=ORG_ID,
         )
         auth = FakeAuthContext(user_id=MEMBER_ID, organization_id=ORG_ID)
-        assert _user_can_access_artifact_via_conversation(auth, conv, artifact) is True
+        assert _user_can_access_artifact_via_conversation(auth, conv, artifact) is False
 
     def test_no_cross_platform_access_leaks(self) -> None:
         """Blocked on all platforms: web, API, Slack (non-source)."""

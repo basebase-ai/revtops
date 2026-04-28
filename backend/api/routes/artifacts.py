@@ -19,7 +19,9 @@ from pydantic import BaseModel
 from sqlalchemy import or_, select
 
 from api.auth_middleware import AuthContext, require_organization
+from api.routes.chat import _build_conversation_access_filter
 from models.artifact import Artifact
+from models.conversation import Conversation
 from models.database import get_session
 from models.user import User
 from models.visibility import normalize_visibility
@@ -382,6 +384,14 @@ async def list_conversation_artifacts(
         organization_id=auth.organization_id_str,
         user_id=auth.user_id_str,
     ) as session:
+        conv_result = await session.execute(
+            select(Conversation)
+            .where(Conversation.id == conv_uuid)
+            .where(_build_conversation_access_filter(auth))
+        )
+        if not conv_result.scalar_one_or_none():
+            raise HTTPException(status_code=404, detail="Conversation not found")
+
         result = await session.execute(
             select(Artifact)
             .where(
