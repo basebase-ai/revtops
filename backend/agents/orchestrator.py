@@ -1890,6 +1890,7 @@ class ChatOrchestrator:
             gathered_results: list[dict[str, Any]] = await asyncio.gather(*tool_tasks)
 
             # Process results in the original tool order
+            pending_cross_user_warnings: list[str] = []
             for tool_use, tool_result in zip(tool_uses, gathered_results):
                 tool_name: str = tool_use["name"]
                 tool_input: dict[str, Any] = tool_use["input"]
@@ -1900,6 +1901,10 @@ class ChatOrchestrator:
                 )
 
                 logger.info("[Orchestrator] Tool result for %s: %s", tool_name, tool_result)
+                if self.source.lower().startswith("slack") and isinstance(tool_result, dict):
+                    warning_text: str = str(tool_result.get("warning") or "").strip()
+                    if warning_text and warning_text not in pending_cross_user_warnings:
+                        pending_cross_user_warnings.append(warning_text)
 
                 block_idx: int = tool_block_indices[tool_id]
                 content_blocks[block_idx]["result"] = tool_result
@@ -1975,6 +1980,16 @@ class ChatOrchestrator:
                     "input": tu["input"],
                 })
             messages.append({"role": "assistant", "content": assistant_content})
+
+            if self.source.lower().startswith("slack") and pending_cross_user_warnings:
+                warning_prefix: str = "⚠️ "
+                warning_text = "\n\n".join(
+                    f"{warning_prefix}{warning}" for warning in pending_cross_user_warnings
+                )
+                content_blocks.append({"type": "text", "text": warning_text})
+                yield warning_text + "\n\n"
+                messages.append({"role": "assistant", "content": [{"type": "text", "text": warning_text}]})
+
             messages.append({"role": "user", "content": tool_results})
 
     @staticmethod
