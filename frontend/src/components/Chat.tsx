@@ -3539,9 +3539,23 @@ function MessageWithBlocks({
               toolBlocks.push(tb);
             }
             if (toolBlocks.length > 0) {
+              const guidanceMessages: string[] = toolBlocks
+                .filter((tb) => tb.status === 'complete')
+                .map((tb) => (tb.result as Record<string, unknown> | undefined)?.user_guidance as string | undefined)
+                .filter((g): g is string => !!g);
+
               elements.push(
-                <div key={`tools-${toolRunStart}`} className="flex flex-wrap items-center gap-1 my-1">
-                  {toolBlocks.map((tb) => renderToolBlock(tb))}
+                <div key={`tools-${toolRunStart}`}>
+                  <div className="flex flex-wrap items-center gap-1 my-1">
+                    {toolBlocks.map((tb) => renderToolBlock(tb))}
+                  </div>
+                  {guidanceMessages.length > 0 && (
+                    <div className="mt-1 mb-2 rounded-md border border-amber-400/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-300">
+                      {guidanceMessages.map((msg, i) => (
+                        <p key={i}>{msg}</p>
+                      ))}
+                    </div>
+                  )}
                 </div>,
               );
             }
