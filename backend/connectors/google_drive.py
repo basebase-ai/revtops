@@ -282,6 +282,26 @@ class GoogleDriveConnector(BaseConnector):
                 ],
             ),
             ConnectorAction(
+                name="insert_rows",
+                description="Insert rows at a specific position in a Google Sheet, shifting existing rows down. Non-destructive — existing data is preserved.",
+                parameters=[
+                    {"name": "external_id", "type": "string", "required": True, "description": "Google Drive file ID of the spreadsheet"},
+                    {"name": "row", "type": "integer", "required": True, "description": "Row number to insert before (1-indexed from sheet read output). Existing rows at and below this position are shifted down."},
+                    {"name": "rows", "type": "array", "required": True, "description": "Array of rows to insert, each row is an array of cell values. E.g. [[\"Acme\", 5000, \"Closed\"]]"},
+                    {"name": "sheet", "type": "string", "required": False, "description": "Sheet name (tab) to insert into. Default: first sheet."},
+                ],
+            ),
+            ConnectorAction(
+                name="delete_rows",
+                description="Delete rows from a Google Sheet by row number, shifting remaining rows up. Use with insert_rows to move rows.",
+                parameters=[
+                    {"name": "external_id", "type": "string", "required": True, "description": "Google Drive file ID of the spreadsheet"},
+                    {"name": "start_row", "type": "integer", "required": True, "description": "First row to delete (1-indexed from sheet read output)."},
+                    {"name": "end_row", "type": "integer", "required": False, "description": "Last row to delete (inclusive, 1-indexed). Default: same as start_row (delete one row)."},
+                    {"name": "sheet", "type": "string", "required": False, "description": "Sheet name (tab). Default: first sheet."},
+                ],
+            ),
+            ConnectorAction(
                 name="append_rows",
                 description="Append rows to the end of a Google Sheet. Non-destructive — existing data is untouched.",
                 parameters=[
@@ -301,7 +321,7 @@ class GoogleDriveConnector(BaseConnector):
             ),
             ConnectorAction(
                 name="edit_file",
-                description="DESTRUCTIVE: Replace ALL content in a Google Doc, Sheet, or Slides. Destroys all existing formatting. For docs use insert_text, for sheets use append_rows/update_cells instead.",
+                description="DESTRUCTIVE: Replace ALL content in a Google Doc, Sheet, or Slides. Destroys all existing formatting. For docs use insert_text, for sheets use insert_rows/delete_rows/append_rows/update_cells instead.",
                 parameters=[
                     {"name": "external_id", "type": "string", "required": True, "description": "Google Drive file ID of the file to edit"},
                     {"name": "content", "type": "string", "required": True, "description": "New content. For documents: Markdown. For sheets/slides: JSON. Same format as create_file."},
@@ -435,6 +455,51 @@ Row 1 is typically the header row. Use these row numbers to understand the data 
 
 ---
 
+## Action: insert_rows (preferred for reorganizing sheets)
+
+Call via `run_on_connector(connector='google_drive', action='insert_rows', params={...})`.
+
+Inserts rows at a specific position in a Google Sheet, **shifting existing rows down**. Non-destructive — all existing data and formatting is preserved.
+
+| Param | Type | Required | Description |
+|-------|------|---------|-------------|
+| external_id | string | Yes | Google Drive file ID of the spreadsheet |
+| row | integer | Yes | Row number to insert before (1-indexed from sheet read output). Existing rows at and below this position are shifted down. |
+| rows | array | Yes | Array of rows to insert, each row is an array of cell values. E.g. `[["Acme", 5000, "Closed"]]` |
+| sheet | string | No | Sheet tab name. Default: first sheet. |
+
+**Examples:**
+- Insert a header section at the top: `run_on_connector(connector='google_drive', action='insert_rows', params={"external_id": "1abc...", "row": 1, "rows": [["Direct Competitors"], ["Company", "URL", "Notes"]]})`
+- Insert before row 5: `run_on_connector(connector='google_drive', action='insert_rows', params={"external_id": "1abc...", "row": 5, "rows": [["NewCo", 3000, "Proposal"]]})`
+- Insert into a specific tab: `run_on_connector(connector='google_drive', action='insert_rows', params={"external_id": "1abc...", "row": 2, "rows": [["data"]], "sheet": "Q2 Data"})`
+
+---
+
+## Action: delete_rows (use with insert_rows to move rows)
+
+Call via `run_on_connector(connector='google_drive', action='delete_rows', params={...})`.
+
+Deletes rows from a Google Sheet by row number, **shifting remaining rows up**. Combine with `insert_rows` to move rows: first insert at the new position, then delete from the old position (adjust row numbers to account for the shift).
+
+| Param | Type | Required | Description |
+|-------|------|---------|-------------|
+| external_id | string | Yes | Google Drive file ID of the spreadsheet |
+| start_row | integer | Yes | First row to delete (1-indexed from sheet read output) |
+| end_row | integer | No | Last row to delete (inclusive, 1-indexed). Default: same as start_row (delete one row). |
+| sheet | string | No | Sheet tab name. Default: first sheet. |
+
+**Examples:**
+- Delete row 5: `run_on_connector(connector='google_drive', action='delete_rows', params={"external_id": "1abc...", "start_row": 5})`
+- Delete rows 3–6: `run_on_connector(connector='google_drive', action='delete_rows', params={"external_id": "1abc...", "start_row": 3, "end_row": 6})`
+- Delete from a specific tab: `run_on_connector(connector='google_drive', action='delete_rows', params={"external_id": "1abc...", "start_row": 10, "end_row": 12, "sheet": "Q2 Data"})`
+
+**Moving rows pattern:** To move rows 10–12 to row 2:
+1. Read the sheet to get current data
+2. `insert_rows` at row 2 with the data from rows 10–12 (3 rows inserted, so old rows 10–12 are now at 13–15)
+3. `delete_rows` start_row=13, end_row=15
+
+---
+
 ## Action: append_rows (preferred for adding data to sheets)
 
 Call via `run_on_connector(connector='google_drive', action='append_rows', params={...})`.
@@ -477,7 +542,7 @@ Updates specific cells in a Google Sheet using A1 notation. **Non-destructive** 
 
 Call via `run_on_connector(connector='google_drive', action='edit_file', params={...})`.
 
-**WARNING:** This deletes ALL existing content and formatting, then rewrites from scratch. For Google Docs use `insert_text`, for Sheets use `append_rows`/`update_cells` instead. Only use when rewriting an entire file from scratch.
+**WARNING:** This deletes ALL existing content and formatting, then rewrites from scratch. For Google Docs use `insert_text`, for Sheets use `insert_rows`/`delete_rows`/`append_rows`/`update_cells` instead. Only use when rewriting an entire file from scratch.
 
 | Param | Type | Required | Description |
 |-------|------|---------|-------------|
@@ -500,6 +565,12 @@ Call via `run_on_connector(connector='google_drive', action='edit_file', params=
 
 **Insert text into a doc (non-destructive):**
 `run_on_connector(connector='google_drive', action='insert_text', params={"external_id": "1abc...", "text": "- New action item\n", "line": "end"})`
+
+**Insert rows at row 3 (shifts existing rows down):**
+`run_on_connector(connector='google_drive', action='insert_rows', params={"external_id": "1abc...", "row": 3, "rows": [["NewCo", 3000, "Proposal"]]})`
+
+**Delete rows 8–10:**
+`run_on_connector(connector='google_drive', action='delete_rows', params={"external_id": "1abc...", "start_row": 8, "end_row": 10})`
 
 **Append a row to a sheet:**
 `run_on_connector(connector='google_drive', action='append_rows', params={"external_id": "1abc...", "rows": [["NewCo", 3000, "Proposal"]]})`
@@ -1452,6 +1523,196 @@ Call via `run_on_connector(connector='google_drive', action='edit_file', params=
             "web_view_link": web_link,
         }
 
+    async def insert_rows(
+        self,
+        external_id: str,
+        row: int,
+        rows: list[list[Any]],
+        sheet: str | None = None,
+    ) -> dict[str, Any]:
+        """Insert rows at a specific position in a Google Sheet, shifting existing rows down."""
+        if not rows:
+            return {"error": "rows is required and must be non-empty"}
+        if row < 1:
+            return {"error": "row must be >= 1 (1-indexed)"}
+
+        await self.get_oauth_token()
+
+        file_snapshot: Optional[dict[str, Any]] = await self._get_shared_file_snapshot(external_id)
+        if not file_snapshot:
+            return {"error": f"File not found in synced metadata: {external_id}"}
+
+        mime_type: str = file_snapshot["mime_type"]
+        if mime_type != GOOGLE_SHEET_MIME:
+            return {"error": "insert_rows only works on Google Sheets."}
+
+        num_rows: int = len(rows)
+        # Sheets API uses 0-indexed row indices for insertDimension
+        zero_based_row: int = row - 1
+
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            # Resolve the target sheet's ID (gid) and title
+            meta_resp = await client.get(
+                f"{SHEETS_API_BASE}/spreadsheets/{external_id}",
+                headers=self._get_headers(),
+                params={"fields": "sheets.properties(sheetId,title)"},
+            )
+            if meta_resp.status_code == 403:
+                return {"error": "Permission denied: you don't have edit access to this spreadsheet."}
+            if meta_resp.status_code != 200:
+                return {"error": f"Failed to fetch spreadsheet metadata: {meta_resp.status_code}"}
+
+            sheets_meta: list[dict[str, Any]] = meta_resp.json().get("sheets", [])
+            if not sheets_meta:
+                return {"error": "Spreadsheet has no sheets."}
+
+            target_sheet_id: int = sheets_meta[0].get("properties", {}).get("sheetId", 0)
+            target_sheet_title: str = sheets_meta[0].get("properties", {}).get("title", "Sheet1")
+            if sheet:
+                found: bool = False
+                for s in sheets_meta:
+                    props: dict[str, Any] = s.get("properties", {})
+                    if props.get("title") == sheet:
+                        target_sheet_id = props.get("sheetId", 0)
+                        target_sheet_title = props["title"]
+                        found = True
+                        break
+                if not found:
+                    return {"error": f"Sheet tab '{sheet}' not found in this spreadsheet."}
+
+            # Step 1: Insert blank rows via batchUpdate → insertDimension
+            insert_resp = await client.post(
+                f"{SHEETS_API_BASE}/spreadsheets/{external_id}:batchUpdate",
+                headers={**self._get_headers(), "Content-Type": "application/json"},
+                json={"requests": [{
+                    "insertDimension": {
+                        "range": {
+                            "sheetId": target_sheet_id,
+                            "dimension": "ROWS",
+                            "startIndex": zero_based_row,
+                            "endIndex": zero_based_row + num_rows,
+                        },
+                        "inheritFromBefore": zero_based_row > 0,
+                    }
+                }]},
+            )
+            if insert_resp.status_code == 403:
+                return {"error": "Permission denied: you don't have edit access to this spreadsheet."}
+            if insert_resp.status_code != 200:
+                return {"error": f"Failed to insert blank rows: {insert_resp.status_code} — {insert_resp.text[:200]}"}
+
+            # Step 2: Write cell values into the newly inserted rows
+            range_notation: str = f"'{target_sheet_title}'!A{row}"
+            write_resp = await client.put(
+                f"{SHEETS_API_BASE}/spreadsheets/{external_id}/values/{range_notation}",
+                headers={**self._get_headers(), "Content-Type": "application/json"},
+                params={"valueInputOption": "USER_ENTERED"},
+                json={"range": range_notation, "majorDimension": "ROWS", "values": rows},
+            )
+            if write_resp.status_code != 200:
+                return {"error": f"Rows inserted but failed to write values: {write_resp.status_code} — {write_resp.text[:200]}"}
+
+        web_link: str = file_snapshot["web_view_link"] or f"https://docs.google.com/open?id={external_id}"
+        return {
+            "status": "inserted",
+            "external_id": external_id,
+            "name": file_snapshot["name"],
+            "rows_inserted": num_rows,
+            "at_row": row,
+            "sheet": target_sheet_title,
+            "web_view_link": web_link,
+        }
+
+    async def delete_rows(
+        self,
+        external_id: str,
+        start_row: int,
+        end_row: int | None = None,
+        sheet: str | None = None,
+    ) -> dict[str, Any]:
+        """Delete rows from a Google Sheet, shifting remaining rows up."""
+        if start_row < 1:
+            return {"error": "start_row must be >= 1 (1-indexed)"}
+        if end_row is None:
+            end_row = start_row
+        if end_row < start_row:
+            return {"error": "end_row must be >= start_row"}
+
+        await self.get_oauth_token()
+
+        file_snapshot: Optional[dict[str, Any]] = await self._get_shared_file_snapshot(external_id)
+        if not file_snapshot:
+            return {"error": f"File not found in synced metadata: {external_id}"}
+
+        mime_type: str = file_snapshot["mime_type"]
+        if mime_type != GOOGLE_SHEET_MIME:
+            return {"error": "delete_rows only works on Google Sheets."}
+
+        # Sheets API uses 0-indexed, exclusive end
+        zero_based_start: int = start_row - 1
+        zero_based_end: int = end_row  # already exclusive since end_row is inclusive 1-indexed
+
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            meta_resp = await client.get(
+                f"{SHEETS_API_BASE}/spreadsheets/{external_id}",
+                headers=self._get_headers(),
+                params={"fields": "sheets.properties(sheetId,title)"},
+            )
+            if meta_resp.status_code == 403:
+                return {"error": "Permission denied: you don't have edit access to this spreadsheet."}
+            if meta_resp.status_code != 200:
+                return {"error": f"Failed to fetch spreadsheet metadata: {meta_resp.status_code}"}
+
+            sheets_meta: list[dict[str, Any]] = meta_resp.json().get("sheets", [])
+            if not sheets_meta:
+                return {"error": "Spreadsheet has no sheets."}
+
+            target_sheet_id: int = sheets_meta[0].get("properties", {}).get("sheetId", 0)
+            target_sheet_title: str = sheets_meta[0].get("properties", {}).get("title", "Sheet1")
+            if sheet:
+                found: bool = False
+                for s in sheets_meta:
+                    props: dict[str, Any] = s.get("properties", {})
+                    if props.get("title") == sheet:
+                        target_sheet_id = props.get("sheetId", 0)
+                        target_sheet_title = props["title"]
+                        found = True
+                        break
+                if not found:
+                    return {"error": f"Sheet tab '{sheet}' not found in this spreadsheet."}
+
+            del_resp = await client.post(
+                f"{SHEETS_API_BASE}/spreadsheets/{external_id}:batchUpdate",
+                headers={**self._get_headers(), "Content-Type": "application/json"},
+                json={"requests": [{
+                    "deleteDimension": {
+                        "range": {
+                            "sheetId": target_sheet_id,
+                            "dimension": "ROWS",
+                            "startIndex": zero_based_start,
+                            "endIndex": zero_based_end,
+                        }
+                    }
+                }]},
+            )
+            if del_resp.status_code == 403:
+                return {"error": "Permission denied: you don't have edit access to this spreadsheet."}
+            if del_resp.status_code != 200:
+                return {"error": f"Failed to delete rows: {del_resp.status_code} — {del_resp.text[:200]}"}
+
+        num_deleted: int = end_row - start_row + 1
+        web_link: str = file_snapshot["web_view_link"] or f"https://docs.google.com/open?id={external_id}"
+        return {
+            "status": "deleted",
+            "external_id": external_id,
+            "name": file_snapshot["name"],
+            "rows_deleted": num_deleted,
+            "from_row": start_row,
+            "to_row": end_row,
+            "sheet": target_sheet_title,
+            "web_view_link": web_link,
+        }
+
     async def append_rows(
         self,
         external_id: str,
@@ -2155,7 +2416,7 @@ Call via `run_on_connector(connector='google_drive', action='edit_file', params=
         """Snapshot file metadata before a mutation."""
         try:
             external_id = data.get("external_id") or data.get("file_id")
-            if external_id and operation in ("insert_text", "edit_file", "append_rows"):
+            if external_id and operation in ("insert_text", "edit_file", "insert_rows", "delete_rows", "append_rows"):
                 token, _ = await self.get_oauth_token()
                 async with httpx.AsyncClient() as client:
                     resp = await client.get(
@@ -2190,16 +2451,36 @@ Call via `run_on_connector(connector='google_drive', action='edit_file', params=
                 text=params.get("text", ""),
                 line=params.get("line", 1),
             )
-        if action == "append_rows":
+        if action == "insert_rows":
             raw_rows: Any = params.get("rows", [])
             if isinstance(raw_rows, str):
                 try:
                     raw_rows = json.loads(raw_rows)
                 except (json.JSONDecodeError, TypeError):
                     return {"error": "rows must be a JSON array of arrays"}
+            return await self.insert_rows(
+                external_id=params.get("external_id", ""),
+                row=int(params.get("row", 1)),
+                rows=raw_rows,
+                sheet=params.get("sheet"),
+            )
+        if action == "delete_rows":
+            return await self.delete_rows(
+                external_id=params.get("external_id", ""),
+                start_row=int(params.get("start_row", 1)),
+                end_row=int(params.get("end_row")) if params.get("end_row") is not None else None,
+                sheet=params.get("sheet"),
+            )
+        if action == "append_rows":
+            raw_append_rows: Any = params.get("rows", [])
+            if isinstance(raw_append_rows, str):
+                try:
+                    raw_append_rows = json.loads(raw_append_rows)
+                except (json.JSONDecodeError, TypeError):
+                    return {"error": "rows must be a JSON array of arrays"}
             return await self.append_rows(
                 external_id=params.get("external_id", ""),
-                rows=raw_rows,
+                rows=raw_append_rows,
                 sheet=params.get("sheet"),
             )
         if action == "update_cells":
