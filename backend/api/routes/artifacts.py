@@ -19,7 +19,7 @@ from pydantic import BaseModel
 from sqlalchemy import or_, select
 
 from api.auth_middleware import AuthContext, require_organization
-from api.routes.chat import _build_conversation_access_filter
+from api.routes.chat import _build_conversation_access_filter, _get_slack_user_ids
 from models.artifact import Artifact
 from models.conversation import Conversation
 from models.database import get_session
@@ -389,7 +389,17 @@ async def list_conversation_artifacts(
             .where(Conversation.id == conv_uuid)
             .where(_build_conversation_access_filter(auth))
         )
-        if not conv_result.scalar_one_or_none():
+        conv = conv_result.scalar_one_or_none()
+        if not conv:
+            slack_user_ids = await _get_slack_user_ids(auth, session=session)
+            if slack_user_ids:
+                conv_result = await session.execute(
+                    select(Conversation)
+                    .where(Conversation.id == conv_uuid)
+                    .where(_build_conversation_access_filter(auth, slack_user_ids))
+                )
+                conv = conv_result.scalar_one_or_none()
+        if not conv:
             raise HTTPException(status_code=404, detail="Conversation not found")
 
         result = await session.execute(
